@@ -6,6 +6,7 @@ import dill
 from bumps.fitters import DreamFit, ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 from bumps.mapper import MPMapper
+from bumps.fitproblem import BaseFitProblem
 #from bumps.dream.state import load_state
 #from refl1d.names import FitProblem, Experiment
 from refl1d.resolution import TL2Q, dTdL2dQ
@@ -18,6 +19,18 @@ from sklearn.linear_model import LinearRegression
 import autorefl as ar
 
 fit_options = {'pop': 10, 'burn': 1000, 'steps': 500, 'init': 'lhs', 'alpha': 0.001}
+
+import warnings
+model_reset = BaseFitProblem.model_reset
+def trapped_model_reset(self, *args, **kw):
+    try:
+        model_reset(self, *args, **kw)
+    except ValueError:
+        if self.dof <= 0:
+            warnings.warn(f"Parameters are under-constrained; the fit has {self.dof} degrees of freedom")
+            self.dof = 1
+        else:
+            raise
 
 def magik_intensity(Q, modelnum=None):
     # gives counts / second as a function of Q for MAGIK
@@ -106,6 +119,7 @@ class SimReflExperiment(object):
 
         # Initialize
         self.problem = problem
+        self.problem.model_reset = trapped_model_reset
         models = [problem] if hasattr(problem, 'fitness') else list(problem.models)
         self.models = models
         self.nmodels = len(models)
@@ -113,6 +127,7 @@ class SimReflExperiment(object):
         self.oversampling = oversampling
         self.fit_options = fit_options
         for m in self.models:
+            m.model_reset = trapped_model_reset
             m.fitness.probe.oversample(oversampling)
             m.fitness.update()
 
