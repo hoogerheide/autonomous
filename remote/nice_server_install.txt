@@ -1,0 +1,7 @@
+To install the Python server:
+    1. Clone the source repository: https://git.ncnr.nist.gov/InstrumentControlSoftware/NICE/
+    2. Set up Java environment (requires Java 14.0.1) and appropriate environment path variables
+    3. Install slice2java executable (https://zeroc.com/downloads/ice)
+    4. Build using "gradlew.bat build -x test"
+    5. Run server using 'gradlew.bat runserver args="resetdata=magik"' (resetdata only necessary if
+            switching instruments, I think)
