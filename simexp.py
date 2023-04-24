@@ -7,159 +7,16 @@ from typing import Tuple, Union, List
 from bumps.fitters import ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 from bumps.mapper import MPMapper
-from bumps.dream.state import MCMCDraw
+
 from refl1d.names import FitProblem, Experiment
-from refl1d.resolution import TL2Q
 from scipy.interpolate import interp1d
 
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
+from datastruct import DataPoint, ExperimentStep, data_attributes
 import autorefl as ar
 import instrument
 
 fit_options = {'pop': 10, 'burn': 1000, 'steps': 500, 'init': 'lhs', 'alpha': 0.001}
-
-data_tuple = Tuple[Union[np.ndarray, list], Union[np.ndarray, list],
-                                   Union[np.ndarray, list], Union[np.ndarray, list],
-                                   Union[np.ndarray, list], Union[np.ndarray, list],
-                                   Union[np.ndarray, list]]
-
-class DataPoint(object):
-    """ Container object for a single data point.
-
-    A "single data point" normally corresponds to a single instrument configuration.
-    Note that for polychromatic and time-of-flight instruments, this may involve multiple
-    Q values. As a result, all of the "data" fields (described below) are stored 
-    as lists or numpy.ndarrays.
-
-    Required attributes:
-    model -- the index of the bumps.FitProblem model with which the data point
-             is associated
-    t -- the total measurement time 
-    movet -- the total movement time. Note that this varies depending on what the 
-            previous point was.
-    x -- a description of the instrument configuration, usually as a single number
-        whose interpretation is determined by the instrument class (e.g. Q for MAGIK,
-        Theta for CANDOR)
-    merit -- if calculated, the figure of merit of this data point. Mainly used for plotting.
-
-    Data attributes. When initializing, these are required as the argument "data" 
-    in a tuple of lists or arrays.
-    T -- theta array
-    dT -- angular resolution array
-    L -- wavelength array
-    dL -- wavelength uncertainty array
-    N -- neutron counts at this instrument configuration
-    Nbkg -- background neutron counts at this instrument configuration
-    Ninc -- incident neutron counts at this instrument configuration
-
-    Methods:
-    Q -- returns an array of Q points corresponding to T and L.
-    """
-
-    def __init__(self, x: float, meastime: float, modelnum: int,
-                       data: data_tuple,
-                       merit: Union[bool, None] = None,
-                       movet: float = 0.0):
-        self.model = modelnum
-        self.t = meastime
-        self.movet = movet
-        self.merit = merit
-        self.x = x
-        self._data: data_tuple = None
-        self.data = data
-
-    def __repr__(self):
-
-        try:
-            reprq = 'Q: %0.4f Ang^-1' % self.Q()
-        except TypeError:
-            reprq = 'Q: ' + ', '.join('{:0.4f}'.format(q) for q in self.Q()) + ' Ang^-1'
-        
-        return ('Model: %i\t' % self.model) + reprq + ('\tTime: %0.1f s' %  self.t)
-
-    @property
-    def data(self):
-        """ gets the internal data variable"""
-        return self._data
-
-    @data.setter
-    def data(self, newdata) -> None:
-        """populates T, dT, L, dL, N, Nbkg, Ninc.
-            newdata is a length-7 tuple of lists"""
-        self._data = newdata
-        self.T, self.dT, self.L, self.dL, self.N, self.Nbkg, self.Ninc = newdata
-
-    def Q(self):
-        return TL2Q(self.T, self.L)
-
-class ExperimentStep(object):
-    """ Container object for a single experiment step.
-
-        Attributes:
-        points -- a list of DataPoint objects
-        H -- MVN entropy in all parameters
-        dH -- change in H from the initial step (with no data and calculated
-                only from the bounds of the model parameters)
-        H_marg -- MVN entropy from selected parameters (marginalized entropy)
-        dH_marg -- change in dH from the initial step
-        foms -- list of the figures of merit for each model
-        scaled_foms -- figures of merit after various penalties are applied. Possibly
-                        not useful
-        meastimes -- list of the measurement time proposed for each Q value of each model
-        qprofs -- list of Q profile arrays calculated from each sample from the MCMC posterior
-        qbkgs -- not used
-        best_logp -- best nllf after fitting
-        final_chisq -- final chi-squared string (including uncertainty) after fitting
-        draw -- an MCMCDraw object containing the best fit results
-        chain_pop -- MCMC chain heads for use in DreamFitPlus for initializing the MCMC
-                     fit. Useful for restarting fits from an arbitrary step.
-        use -- a flag for whether the step contains real data and should be used in furthur
-                analysis.
-        
-        TODO: do not write draw.state, which is inflating file sizes!
-
-        Methods:
-        getdata -- returns all data of type "attr" for data points from a specific model
-        meastime -- returns the total measurement time or the time from a specific model
-        movetime -- returns the total movement time or the time from a specific model
-    """
-
-    def __init__(self, points: List[DataPoint], use=True) -> None:
-        self.points = points
-        self.H: Union[float, None] = None
-        self.dH: Union[float, None] = None
-        self.H_marg: Union[float, None] = None
-        self.dH_marg: Union[float, None] = None
-        self.foms: Union[List[np.ndarray], None] = None
-        self.scaled_foms: Union[List[np.ndarray], None] = None
-        self.meastimes: Union[List[np.ndarray], None] = None
-        self.qprofs: Union[List[np.ndarray], None] = None
-        self.qbkgs: Union[List[np.ndarray], None] = None
-        self.best_logp: Union[float, None] = None
-        self.final_chisq: Union[str, None] = None
-        self.draw: Union[MCMCDraw, None] = None
-        self.chain_pop: Union[np.ndarray, None] = None
-        self.use: bool = use
-
-    def getdata(self, attr: str, modelnum: int) -> list:
-        # returns all data of type "attr" for a specific model
-        if self.use:
-            return [getattr(pt, attr) for pt in self.points if pt.model == modelnum]
-        else:
-            return []
-
-    def meastime(self, modelnum: Union[int, None] = None) -> float:
-        if modelnum is None:
-            return sum([pt.t for pt in self.points])
-        else:
-            return sum([pt.t for pt in self.points if pt.model == modelnum])
-
-    def movetime(self, modelnum: Union[int, None] = None) -> float:
-        if modelnum is None:
-            return sum([pt.movet for pt in self.points])
-        else:
-            return sum([pt.movet for pt in self.points if pt.model == modelnum])
-
 
 class SimReflExperiment(object):
     """
@@ -222,8 +79,6 @@ class SimReflExperiment(object):
                        min_meas_time: float = 10.0,
                        select_pars: Union[list, None] = None) -> None:
         
-        self.attr_list = ['T', 'dT', 'L', 'dL', 'N', 'Nbkg', 'Ninc']
-
         # Load instrument
         self.instrument = instrument
 
@@ -322,7 +177,7 @@ class SimReflExperiment(object):
 
     def compile_datapoints(self, Qbasis, points) -> Tuple:
         # bins all of the data from a list "points" onto a Q-space "Qbasis"
-        idata = [[val for pt in points for val in getattr(pt, attr)] for attr in self.attr_list]
+        idata = [[val for pt in points for val in getattr(pt, attr)] for attr in data_attributes]
 
         return ar.compile_data_N(Qbasis, *idata)
 
