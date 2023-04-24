@@ -3,6 +3,7 @@ import json
 import warnings
 from reflred.candor import edges
 from reflred.resolution import divergence
+from reflred.intent import Intent
 
 def q2a(q, L):
     return np.degrees(np.arcsin(np.array(q)*L/(4*np.pi)))
@@ -30,6 +31,7 @@ class ReflectometerBase(object):
         self._LS3 = None
         self._L34 = None
         self.footprint = None
+        self.fixed_slits = None
         self.sample_width = None
         self._S3Offset = 0.0
         self._R12 = 1.0
@@ -130,13 +132,33 @@ class ReflectometerBase(object):
         return (bar_T[idxs], bar_dT[idxs], bar_L[idxs], bar_dL[idxs])
 
 
-    def get_slits(self, x):
-        x = np.array(x, ndmin=1)
-        sintheta = np.sin(np.radians(self.x2a(x)))
-        s2 = self.footprint * sintheta / ((self._R12 + 1) * self._L2S / self._L12 + 1)
-        s1 = self._R12 * s2
-        s3 = (s1 + s2) * (self._L2S + self._LS3) / self._L12 + s2 + self._S3Offset
-        s4 = (s1 + s2) * (self._L2S + self._LS3 + self._L34) / self._L12 + s2 + self._S3Offset
+    def get_slits(self, x, force_angle=None):
+        """
+        Returns slit values. If "fixed_slits" is set to a tuple of slit values (s1, s2, s3, s4),
+        this is returned. Otherwise, calculates slits based on "footprint".
+
+        Inputs:
+        x -- the x value at which to get the slits
+        force_angle (optional) -- force theta to be this particular value (ignores x). Useful for
+                                    backgrounds where a constant footprint is desired but theta
+                                    deviates from the specular condition
+        """
+        if self.fixed_slits is not None:
+            
+            x = np.array(x, ndmin=1)
+
+            if force_angle is None:
+                sintheta = np.sin(np.radians(self.x2a(x)))
+            else:
+                sintheta = np.sin(np.radians(np.array(force_angle, ndmin=1)))
+
+            s2 = self.footprint * sintheta / ((self._R12 + 1) * self._L2S / self._L12 + 1)
+            s1 = self._R12 * s2
+            s3 = (s1 + s2) * (self._L2S + self._LS3) / self._L12 + s2 + self._S3Offset
+            s4 = (s1 + s2) * (self._L2S + self._LS3 + self._L34) / self._L12 + s2 + self._S3Offset
+
+        else:
+            s1, s2, s3, s4 = self.fixed_slits
 
         return s1, s2, s3, s4
 
@@ -251,6 +273,46 @@ class MAGIK(ReflectometerBase):
     def dL(self, x):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
+    
+    def trajectoryData(self, x, intent, dtheta_bkg=0.5):
+        """
+        Generates string for NICE instrument control movement.
+
+        Backgrounds are implemented as sample angle movements.
+
+        Inputs:
+        x -- the (single) x value at which to generate trajectory movement string
+        intent -- sets the intent of the measurement (specular, backp, or backm). Compared against
+                    reflred.intent.Intent.(spec, backp, or backm)
+        dtheta_bkg (default=0.5) -- angle offset in degrees for backp and backm measurements
+        """
+
+        movements = []
+
+        # detector angle
+        detectorAngle = 2 * self.x2a(x)
+        movements.append(['detectorAngle', f'{detectorAngle:0.3f}'])
+
+        # sample angle depends on intent
+        if intent == Intent.spec:
+            sampleAngle = detectorAngle / 2.0
+        elif intent == Intent.backp:
+            sampleAngle = detectorAngle / 2.0 + dtheta_bkg
+        elif intent == Intent.backm:
+            sampleAngle = detectorAngle / 2.0 - dtheta_bkg
+
+        movements.append(['sampleAngle', f'{sampleAngle:0.3f}'])
+
+        # slit values
+        s1, s2, s3, s4 = self.get_slits(x, force_angle=sampleAngle)
+        movements.append(['slitAperture1', f'{s1:0.4f}'])
+        movements.append(['slitAperture2', f'{s2:0.4f}'])
+        movements.append(['slitAperture3', f'{s3:0.4f}'])
+        movements.append(['slitAperture4', f'{s4:0.4f}'])
+
+        # return flattened list
+        return [item for movelist in movements for item in movelist]
+
 
 class CANDOR(ReflectometerBase):
     """ CANDOR Reflectometer with a single bank
@@ -346,4 +408,43 @@ class CANDOR(ReflectometerBase):
     def dL(self, x):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
-    
+
+    def trajectoryData(self, x, intent, dtheta_bkg=0.5):
+        """
+        Generates string for NICE instrument control movement.
+
+        Backgrounds are implemented as sample angle movements. Assumes detectorTableMotor has been
+        zeroed for the bank of interest
+
+        Inputs:
+        x -- the (single) x value at which to generate trajectory movement string
+        intent -- sets the intent of the measurement (specular, backp, or backm). Compared against
+                    reflred.intent.Intent.(spec, backp, or backm)
+        dtheta_bkg (default=0.5) -- angle offset in degrees for backp and backm measurements
+        """
+
+        movements = []
+
+        # detector angle
+        detectorAngle = 2.0 * self.x2a(x)
+        movements.append(['detectorArmAngle', f'{detectorAngle:0.4f}'])
+
+        # sample angle depends on intent
+        if intent == Intent.spec:
+            sampleAngle = detectorAngle / 2.0
+        elif intent == Intent.backp:
+            sampleAngle = detectorAngle / 2.0 + dtheta_bkg
+        elif intent == Intent.backm:
+            sampleAngle = detectorAngle / 2.0 - dtheta_bkg
+
+        movements.append(['sampleAngle', f'{sampleAngle:0.4f}'])
+
+        # slit values
+        s1, s2, s3, s4 = self.get_slits(x, force_angle=sampleAngle)
+        movements.append(['slitAperture1', f'{s1:0.4f}'])
+        movements.append(['slitAperture2', f'{s2:0.4f}'])
+        movements.append(['slitAperture3', f'{s3:0.4f}'])
+
+        # return flattened list
+        return [item for movelist in movements for item in movelist]
+
