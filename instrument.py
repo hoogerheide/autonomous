@@ -273,7 +273,15 @@ class MAGIK(ReflectometerBase):
     def dL(self, x):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
-    
+
+    def trajectoryMotors(self):
+        """
+        Generates list of motors moved for trajectory
+        """
+
+        return ['detectorAngle', 'sampleAngle', 'slitAperture1','slitAperture2', 'slitAperture3',
+                'slitAperture4']
+
     def trajectoryData(self, x, intent, dtheta_bkg=0.5):
         """
         Generates string for NICE instrument control movement.
@@ -408,6 +416,14 @@ class CANDOR(ReflectometerBase):
     def dL(self, x):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
+
+    def trajectoryMotors(self):
+        """
+        Generates list of motors moved for trajectory
+        """
+
+        return ['detectorArmAngle', 'sampleAngle', 'slitAperture1', 'slitAperture2',
+                'slitAperture3']
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5):
         """
