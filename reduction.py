@@ -37,7 +37,7 @@ def interpolate_background(Qbasis, backp: Union[ReflData, None] = None, backm: U
 
     return bkg.x, bkg.variance
 
-def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='time') -> Tuple[Union[ReflData, None], Union[ReflData, None]]:
+def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[Union[ReflData, None], Union[ReflData, None]]:
     """
     Converts a list of DataPoint objects to tuple of numpy arrays (T, dT, L, dL, N, Ninc). Filters
     out any data points with zero incident intensity (protects against division by zero)
@@ -51,6 +51,7 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='time') -> Tuple[
     """
 
     idata = {attr: [val for pt in data for val in getattr(pt, attr)] for attr in data_attributes}
+    idata['t'] = [pt.t for pt in data for _ in getattr(pt, 'T')] 
     idata['Ninc'] = np.round(idata['Ninc'])
     crit = idata['Ninc'] > 0
 
@@ -61,6 +62,7 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='time') -> Tuple[
 
         q_edges = edges(Qbasis, extended=True)
         #argsort = np.argsort(idata['T'])
+        t = idata['t'][:, None, None]
         v = idata['N'][:, None, None]
         v += (v == 0)
         dv = np.sqrt(v)
@@ -73,7 +75,7 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='time') -> Tuple[
                     sample=Sample(angle_x=T),
                     angular_resolution=dT,
                     detector=Detector(angle_x=2*T, wavelength=L, wavelength_resolution=wavelength_resolution),
-                    _v=v, _dv=dv, Qz_basis='detector', normbase=normbase)
+                    _v=v, _dv=dv, Qz_basis='actual', normbase=normbase)
 
         qz, dq, v, dv, _Ti, _dT, _L, _dL = _rebin_bank(data, 0, q_edges, 'poisson')
         data = QData(data, qz, dq, v, dv, _Ti, _dT, _L, _dL)
@@ -82,12 +84,12 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='time') -> Tuple[
                         sample=Sample(angle_x=T),
                         angular_resolution=dT,
                         detector=Detector(angle_x=2*T, wavelength=L, wavelength_resolution=wavelength_resolution),
-                        _v=vinc, _dv=dvinc, Qz_basis='detector', normbase=normbase)
+                        _v=vinc, _dv=dvinc, Qz_basis='actual', normbase=normbase)
 
         qz, dq, v, dv, _Ti, _dT, _L, _dL = _rebin_bank(inc, 0, q_edges, 'poisson')
         inc = QData(data, qz, dq, v, dv, _Ti, _dT, _L, _dL)
 
-        apply_intensity_norm(data, inc)
+        apply_intensity_norm(data, inc, align_by='detector.angle_x')
 
         return data
     

@@ -261,7 +261,7 @@ class SimReflExperiment(object):
                             spec.detector.wavelength, spec.detector.wavelength_resolution,  \
                             spec.v, spec.dv, spec.Qz, spec.dQ
 
-            print(mT, mdT, mL, mdL, mR, mdR, mQ, mdQ)
+            #print(mT, mdT, mL, mdL, mR, mdR, mQ, mdQ)
 
             m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
             m.fitness.probe.oversample(self.oversampling)
@@ -526,8 +526,10 @@ class SimReflExperiment(object):
 
             # calculate the existing background uncertainty. This is used to determine if additional
             # background measurements must be performed
+            specdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.spec)]
             bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backp) & step.use]
             bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backm) & step.use]
+            spec = DataPoint2ReflData(Qth, specdata)
             bkgp = DataPoint2ReflData(Qth, bkgpdata)
             bkgm = DataPoint2ReflData(Qth, bkgmdata)
             
@@ -540,19 +542,24 @@ class SimReflExperiment(object):
             # 1.0 so they will always be measured.
             dbkg = np.sqrt(bkgvar) if bkgvar is not None else np.full_like(Qth, 1.0)
 
-            print(qprof.shape, qbkg.shape)
-            plt.plot(Qth, qbkg)
-            plt.plot(Qth, qbkg + dbkg, Qth, qbkg - dbkg)
-            plt.plot(Qth, np.median(qprof, axis=0), Qth, np.median(qprof, axis=0) + np.std(qprof, axis=0),
-                    Qth, np.median(qprof, axis=0) - np.std(qprof, axis=0))
-            plt.yscale('log')
-            plt.show()
+            if False:
+                print(qprof.shape, qbkg.shape)
+                if spec is not None:
+                    plt.errorbar(spec.Qz, spec.v, spec.dv, fmt='.', capsize=4)
+                    spec = reduce(Qth, specdata, bkgpdata, bkgmdata)
+                    plt.errorbar(spec.Qz, spec.v, spec.dv, fmt='o', capsize=4)
+                plt.plot(Qth, qbkg)
+                plt.plot(Qth, qbkg + dbkg, Qth, qbkg - dbkg)
+                plt.plot(Qth, np.median(qprof, axis=0), Qth, np.median(qprof, axis=0) + np.std(qprof, axis=0),
+                        Qth, np.median(qprof, axis=0) - np.std(qprof, axis=0))
+                plt.yscale('log')
+                plt.show()
 
             # define signal to background. For now, this is just a scaling factor on the effective rate
             # reference: Hoogerheide et al. J Appl. Cryst. 2022
             sbr = qprof / qbkg
-            refl = qprof/(1+2/sbr)
-            refl = np.clip(refl, a_min=0, a_max=None)
+            #refl = qprof/(1+2/sbr)
+            refl = np.clip(qprof, a_min=0, a_max=None)
             
             # perform interpolation. xqprof should have shape N x XD. This is a slow step (and should only be done once)
             interp_refl = interp1d(Qth, refl, axis=1, fill_value=(refl[:,0], refl[:,-1]), bounds_error=False)
@@ -646,6 +653,16 @@ class SimReflExperiment(object):
                 # Compare uncertainty in background to expected uncertainty in reflectivity
                 t_0 = 1.0 / (incident_neutrons * xqbkg * (xdbkg / xqbkg) ** 2)
                 t_bkg = 1.0 / (incident_neutrons * xqbkg * (meas_sigma / xqbkg) ** 2)
+                if False:
+                    plt.plot(t_0)
+                    plt.plot(t_bkg)
+                    plt.yscale('log')
+                    plt.show()
+
+                    #plt.plot(xdbkg)
+                    #plt.plot(meas_sigma)
+                    #plt.yscale('log')
+                    #plt.show()
 
                 # Calculate time required to achieve target background; negative times indicate
                 # that background measurement is not necessary
