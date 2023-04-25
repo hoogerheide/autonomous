@@ -11,7 +11,8 @@ from matplotlib.gridspec import GridSpec
 Color = Union[Tuple[float, float, float] , str]
 
 import autorefl as ar
-from simexp import SimReflExperiment, SimReflExperimentControl, ExperimentStep, data_tuple
+from simexp import SimReflExperiment, SimReflExperimentControl, ExperimentStep
+from datastruct import data_tuple
 
 
 def get_steps_time(steps: List[ExperimentStep], control: bool = False) -> np.ndarray:
