@@ -69,7 +69,7 @@ class DataPoint(object):
         except TypeError:
             reprq = 'Q: ' + ', '.join('{:0.4f}'.format(q) for q in self.Q()) + ' Ang^-1'
         
-        return ('Model: %i\t' % self.model) + reprq + ('Intent: ' + self.intent) + ('\tTime: %0.1f s' %  self.t) + ('\tCounts: %i' % self.N)
+        return ('Model: %i\t' % self.model) + reprq + ('\tIntent: ' + self.intent) + ('\tTime: %0.1f s' %  self.t) + ('\tCounts: %i' % self.N)
 
     @property
     def data(self):
@@ -100,6 +100,7 @@ class ExperimentStep(object):
         scaled_foms -- figures of merit after various penalties are applied. Possibly
                         not useful
         meastimes -- list of the measurement time proposed for each Q value of each model
+        bkgmeastimes -- list of the background measurement time proposed for each Q value
         qprofs -- list of Q profile arrays calculated from each sample from the MCMC posterior
         qbkgs -- not used
         best_logp -- best nllf after fitting
@@ -127,6 +128,7 @@ class ExperimentStep(object):
         self.foms: Union[List[np.ndarray], None] = None
         self.scaled_foms: Union[List[np.ndarray], None] = None
         self.meastimes: Union[List[np.ndarray], None] = None
+        self.bkgmeastimes: Union[List[np.ndarray], None] = None
         self.qprofs: Union[List[np.ndarray], None] = None
         self.qbkgs: Union[List[np.ndarray], None] = None
         self.best_logp: Union[float, None] = None

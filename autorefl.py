@@ -10,9 +10,10 @@ def sim_data_N(R, incident_neutrons, addnoise=True, resid_bkg=0, meas_bkg=0):
     _bR = np.ones_like(R)*(meas_bkg - resid_bkg)*incident_neutrons
     _R = (R + meas_bkg - resid_bkg)*incident_neutrons
     N = poisson.rvs(_R, size=_R.shape)
-    bN = poisson.rvs(_bR, size=_bR.shape)
+    bNp = poisson.rvs(_bR, size=_bR.shape)
+    bNm = poisson.rvs(_bR, size=_bR.shape)
 
-    return N, bN, incident_neutrons
+    return N, (bNp, bNm), incident_neutrons
 
 def calc_expected_R(fitness, T, dT, L, dL, oversampling=None, resolution='normal'):
     # currently requires sorted values (by Q) because it returns sorted values.

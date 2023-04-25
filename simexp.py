@@ -12,7 +12,8 @@ from refl1d.names import FitProblem, Experiment
 from scipy.interpolate import interp1d
 
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
-from datastruct import DataPoint, ExperimentStep, data_attributes
+from datastruct import DataPoint, ExperimentStep, data_attributes, Intent
+from reduction import DataPoint2ReflData, interpolate_background, reduce
 import autorefl as ar
 import instrument
 
@@ -163,7 +164,7 @@ class SimReflExperiment(object):
 
 # calculate initial MVN entropy in the problem
         self.entropy_options = {**default_entropy_options, **entropy_options}
-        self.thinning = int(self.fit_options['steps']*0.05)
+        self.thinning = int(self.fit_options['steps']*0.8)
         self.init_entropy, _, _ = calc_init_entropy(problem, pop=fit_options['pop'] * fit_options['steps'] / self.thinning, options=entropy_options)
         self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=fit_options['pop'] * fit_options['steps'] / self.thinning, options=entropy_options)
 
@@ -242,7 +243,7 @@ class SimReflExperiment(object):
             dLs = np.ones_like(newQ)*0.01648374 * 5.0
 
             # Append the data points with zero measurement time
-            points.append(DataPoint(0.0, 0.0, mnum, (Ts, dTs, Ls, dLs, Ns, Nbkgs, Nincs)))
+            points.append(DataPoint(0.0, 0.0, mnum, (Ts, dTs, Ls, dLs, Ns, Nincs), Intent.spec))
 
         # Add the step with the new points
         self.add_step(points, use=False)
@@ -251,7 +252,17 @@ class SimReflExperiment(object):
         # Update the models in the fit problem with new data points. Should be run every time
         # new data are to be incorporated into the model
         for i, (m, measQ) in enumerate(zip(self.models, self.measQ)):
-            mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = self.compile_datapoints(measQ, self.get_all_points(i))
+            specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
+            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
+            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
+            spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
+            #mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = self.compile_datapoints(measQ, self.get_all_points(i))
+            mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
+                            spec.detector.wavelength, spec.detector.wavelength_resolution,  \
+                            spec.v, spec.dv, spec.Qz, spec.dQ
+
+            print(mT, mdT, mL, mdL, mR, mdR, mQ, mdQ)
+
             m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
             m.fitness.probe.oversample(self.oversampling)
             m.fitness.probe.resolution = self.instrument.resolution
@@ -361,12 +372,12 @@ class SimReflExperiment(object):
         if self.entropy_options['scale']:
             pts = copy.copy(pts) / self.par_scale[:, self.sel]
 
-        foms, meastimes, _, newpoints = self._fom_from_draw(pts, step.qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat)
+        foms, meastimes, bkgmeastimes, _, newpoints = self._fom_from_draw(pts, step.qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat)
         print('Total figure of merit calculation time: %f' % (time.time() - init_time))
 
         # populate step foms
         # TODO: current analysis code can't handle multiple foms, could pass all of them in here
-        step.foms, step.meastimes = foms[0], meastimes[0]
+        step.foms, step.meastimes, step.bkgmeastimes = foms[0], meastimes[0], bkgmeastimes[0]
 
         # Determine next measurement point(s).
         # Number of points to be used is determined from n_forecast (self.npoints)
@@ -374,11 +385,12 @@ class SimReflExperiment(object):
         #       over self.npoints
         points = []
         for pt, fom in zip(newpoints, foms):
-            mnum, idx, newx, new_meastime = pt
-            newpoint = self._generate_new_point(mnum, newx, new_meastime, fom[mnum][idx])
-            newpoint.movet = self.instrument.movetime(newpoint.x)[0]
-            points.append(newpoint)
-            print('New data point:\t' + repr(newpoint))
+            mnum, idx, newx, new_meastime, new_bkgmeastime = pt
+            newpoints = self._generate_new_point(mnum, newx, new_meastime, new_bkgmeastime, fom[mnum][idx])
+            newpoints[0].movet = self.instrument.movetime(newpoints[0].x)[0]
+            for newpoint in newpoints:
+                points.append(newpoint)
+                print('New data point:\t' + repr(newpoint))
 
             # Once a new point is added, update the current model so model switching
             # penalties can be reapplied correctly
@@ -421,7 +433,7 @@ class SimReflExperiment(object):
 
         return scaled_foms
 
-    def _apply_time_penalties(self, foms, meastimes, curmodel=None) -> List[np.ndarray]:
+    def _apply_time_penalties(self, foms, meastimes, bkgmeastimes, curmodel=None) -> List[np.ndarray]:
         """
         Applies any penalties that act to increase the measurement time, e.g. movement penalties or model switch time penalities
         NOTE: uses current state of the instrument (self.instrument.x).
@@ -429,6 +441,7 @@ class SimReflExperiment(object):
         Inputs:
         foms -- list of of figure of merits, one for each model
         meastimes -- list of proposed measurement time vectors, one for each model
+        bkgmeastimes -- list of proposed background measurement times, one for each model
         curmodel -- integer index of current model
 
         Returns:
@@ -441,11 +454,16 @@ class SimReflExperiment(object):
         # Apply minimum to proposed measurement times
         min_meas_times = [np.maximum(np.full_like(meastime, self.min_meas_time), meastime) for meastime in meastimes]
 
+        # Apply minimum to non-zero background measurement times
+        min_bkgmeastimes = copy.deepcopy(bkgmeastimes)
+        for bkgmeastime in min_bkgmeastimes:
+            bkgmeastime[bkgmeastime > 0] = np.clip(bkgmeastime[bkgmeastime > 0], a_min = self.min_meas_time, a_max = None)
+
         # Calculate time penalty to switch models
         switch_time_penalty = [0.0 if j == curmodel else self.switch_time_penalty for j in range(self.nmodels)]
 
         # Add all movement time penalties together.
-        movepenalty = [meastime / (meastime + self.instrument.movetime(x) + pen) for x, meastime, pen in zip(self.x, min_meas_times, switch_time_penalty)]
+        movepenalty = [meastime / (meastime + bkgmeastime + self.instrument.movetime(x) + pen) for x, meastime, bkgmeastime, pen in zip(self.x, min_meas_times, min_bkgmeastimes, switch_time_penalty)]
 
         # Perform scaling
         scaled_foms = [fom * movepen for fom,movepen in zip(foms, movepenalty)]
@@ -483,16 +501,21 @@ class SimReflExperiment(object):
             X -- number of x values in xs
             D -- number of detectors
             N -- number of samples
+            M -- number of samples after selecting those inside the confidence interval
             P -- number of marginalized parameters"""
+
+        import matplotlib.pyplot as plt
 
         # Cycle through models, with model-specific x, Q, calculated q profiles, and measurement background level
         # Populate q vectors, interpolated q profiles (slow), and intensities
         intensities = list()
         intens_shapes = list()
         qs = list()
+        xqbkgs = list()
+        xdbkgs = list()
         xqprofs = list()
         init_time = time.time()
-        for xs, Qth, qprof, qbkg in zip(self.x, self.measQ, qprofs, self.meas_bkg):
+        for mnum, (xs, Qth, qprof, qbkg_default) in enumerate(zip(self.x, self.measQ, qprofs, self.meas_bkg)):
 
             # get the incident intensity and q values for all x values (should have same shape X x D).
             # flattened dimension is XD
@@ -501,25 +524,59 @@ class SimReflExperiment(object):
             incident_neutrons = incident_neutrons.flatten()
             q = self.instrument.x2q(xs).flatten()
 
+            # calculate the existing background uncertainty. This is used to determine if additional
+            # background measurements must be performed
+            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backp) & step.use]
+            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backm) & step.use]
+            bkgp = DataPoint2ReflData(Qth, bkgpdata)
+            bkgm = DataPoint2ReflData(Qth, bkgmdata)
+            
+            bkg, bkgvar = interpolate_background(Qth, bkgp, bkgm)
+
+            # if real measurement backgrounds are available, use them
+            qbkg = bkg if bkg is not None else np.full_like(Qth, qbkg_default)
+            
+            # also calculate the background uncertainty. If real backgrounds are not available, use
+            # 1.0 so they will always be measured.
+            dbkg = np.sqrt(bkgvar) if bkgvar is not None else np.full_like(Qth, 1.0)
+
+            print(qprof.shape, qbkg.shape)
+            plt.plot(Qth, qbkg)
+            plt.plot(Qth, qbkg + dbkg, Qth, qbkg - dbkg)
+            plt.plot(Qth, np.median(qprof, axis=0), Qth, np.median(qprof, axis=0) + np.std(qprof, axis=0),
+                    Qth, np.median(qprof, axis=0) - np.std(qprof, axis=0))
+            plt.yscale('log')
+            plt.show()
+
             # define signal to background. For now, this is just a scaling factor on the effective rate
             # reference: Hoogerheide et al. J Appl. Cryst. 2022
             sbr = qprof / qbkg
             refl = qprof/(1+2/sbr)
             refl = np.clip(refl, a_min=0, a_max=None)
-
+            
             # perform interpolation. xqprof should have shape N x XD. This is a slow step (and should only be done once)
             interp_refl = interp1d(Qth, refl, axis=1, fill_value=(refl[:,0], refl[:,-1]), bounds_error=False)
             xqprof = np.array(interp_refl(q))
+
+            # interpolate the background. Should also have shape XD
+            #interp_refl_bkg = interp1d(Qth, qbkg, fill_value=(qbkg[0], qbkg[-1]), bounds_error=False)
+            #xqbkg = np.array(interp_refl_bkg(q))
+            xqbkg, xdbkg2 = interpolate_background(q, bkgp, bkgm)
+            xqbkg = xqbkg if xqbkg is not None else np.full_like(q, qbkg_default)
+            xdbkg2 = xdbkg2 if xdbkg2 is not None else np.full_like(q, 1.0)
 
             intensities.append(incident_neutrons)
             intens_shapes.append(init_shape)
             qs.append(q)
             xqprofs.append(xqprof)
+            xqbkgs.append(xqbkg)
+            xdbkgs.append(np.sqrt(xdbkg2))
 
         print(f'Forecast setup time: {time.time() - init_time}')
 
         all_foms = list()
         all_meas_times = list()
+        all_bkg_meas_times = list()
         all_H0 = list()
         all_new = list()
         org_curmodel = self.curmodel
@@ -535,6 +592,7 @@ class SimReflExperiment(object):
             Hlist = list()
             foms = list()
             meas_times = list()
+            bkg_meas_times = list()
             #newidxs_select = list()
             newidxs_meas = list()
             newxqprofs = list()
@@ -547,7 +605,7 @@ class SimReflExperiment(object):
 
             all_H0.append(H0)
             # cycle though models
-            for incident_neutrons, init_shape, q, xqprof in zip(intensities, intens_shapes, qs, xqprofs):
+            for incident_neutrons, init_shape, q, xqprof, xqbkg, xdbkg in zip(intensities, intens_shapes, qs, xqprofs, xqbkgs, xdbkgs):
 
                 #init_time2a = time.time()
                 # TODO: Shouldn't these already be sorted by the second step?
@@ -585,6 +643,15 @@ class SimReflExperiment(object):
                 meastime_sel = 1.0 / xrefl_sel
                 meastime_meas = 1.0 / xrefl_meas
 
+                # Compare uncertainty in background to expected uncertainty in reflectivity
+                t_0 = 1.0 / (incident_neutrons * xqbkg * (xdbkg / xqbkg) ** 2)
+                t_bkg = 1.0 / (incident_neutrons * xqbkg * (meas_sigma / xqbkg) ** 2)
+
+                # Calculate time required to achieve target background; negative times indicate
+                # that background measurement is not necessary
+                # TODO: Should a_min be self.min_meas_time?
+                bkg_meastime = np.clip(t_bkg - t_0, a_min=0.0, a_max=None)
+
                 # apply min measurement time (turn this off initially to test operation)
                 #meastime = np.maximum(np.full_like(meastime, self.min_meas_time), meastime)
 
@@ -595,20 +662,23 @@ class SimReflExperiment(object):
                 # calculate fom and average time (shape X)
                 fom = np.sum(dHdt, axis=1)
                 meas_time = 1./ np.sum(1./np.reshape(meastime_meas, init_shape), axis=1)
+                bkg_meas_time = 1./ np.sum(1./np.reshape(bkg_meastime, init_shape), axis=1)
 
                 Hlist.append(Hs)
                 foms.append(fom)
                 meas_times.append(meas_time)
+                bkg_meas_times.append(bkg_meas_time)
                 newxqprofs.append(meas_xqprof)
                 newidxs_meas.append(newidx)
                 
             # populate higher-level lists
             all_foms.append(foms)
             all_meas_times.append(meas_times)
+            all_bkg_meas_times.append(bkg_meas_times)
 
             # apply penalties
             scaled_foms = self._apply_fom_penalties(foms, curmodel=self.curmodel)
-            scaled_foms = self._apply_time_penalties(scaled_foms, meas_times, curmodel=self.curmodel)
+            scaled_foms = self._apply_time_penalties(scaled_foms, meas_times, bkg_meas_times, curmodel=self.curmodel)
 
             # remove current point from contention if allow_repeat is False
             if (not allow_repeat) & (self.instrument.x is not None):
@@ -622,8 +692,9 @@ class SimReflExperiment(object):
                 _, mnum, idx = top_n
                 newx = self.x[mnum][idx]
                 new_meastime = max(meas_times[mnum][idx], self.min_meas_time)
+                new_bkgmeastime = max(bkg_meas_times[mnum][idx], self.min_meas_time) if bkg_meas_times[mnum][idx] > 0 else 0.0
                 
-                all_new.append([mnum, idx, newx, new_meastime])
+                all_new.append([mnum, idx, newx, new_meastime, new_bkgmeastime])
             else:
                 break
 
@@ -659,7 +730,7 @@ class SimReflExperiment(object):
         self.instrument.x = org_x
         self.curmodel = org_curmodel
 
-        return all_foms, all_meas_times, all_H0, all_new
+        return all_foms, all_meas_times, all_bkg_meas_times, all_H0, all_new
 
     def _find_fom_maxima(self, scaled_foms: List[np.ndarray],
                          start: int = 0) -> List[Tuple[float, int, int]]:
@@ -711,7 +782,8 @@ class SimReflExperiment(object):
     def _generate_new_point(self, mnum: int,
                                   newx: float,
                                   new_meastime: float,
-                                  maxfom: Union[float, None] = None) -> DataPoint:
+                                  new_bkgmeastime: float,
+                                  maxfom: Union[float, None] = None) -> List[DataPoint]:
         """ Generates a new data point with simulated data from the specified x
             position, model number, and measurement time
             
@@ -742,36 +814,14 @@ class SimReflExperiment(object):
         #print('expected R:', calcR)
         incident_neutrons = self.instrument.intensity(newx) * new_meastime
         N, Nbkg, Ninc = ar.sim_data_N(calcR, incident_neutrons, resid_bkg=self.resid_bkg[mnum], meas_bkg=self.meas_bkg[mnum])
-        
-        return DataPoint(newx, new_meastime, mnum, (T, dT, L, dL, N[0], Nbkg[0], Ninc[0]), merit=maxfom)
+        Nbkgp, Nbkgm = Nbkg
+        pts = [DataPoint(newx, new_meastime, mnum, (T, dT, L, dL, N[0], Ninc[0]), merit=maxfom, intent=Intent.spec)]
 
-    def select_new_point(self, step: ExperimentStep, start: int = 0) -> Union[DataPoint, None]:
-        """ (Deprecated) Find a single new point to measure from the figure of merit
-        
-        Inputs:
-        step -- the step to analyze. Assumes that step has foms (figures of merit) and
-                measurement times precalculated
-        start -- index of figure of merit maxima to begin searching. Allows multiple points
-                to be identified by calling select_new_point sequentially, incrementing "start"
+        if new_bkgmeastime > 0:
+            pts.append(DataPoint(newx, new_bkgmeastime / 2.0, mnum, (T, dT, L, dL, Nbkgp[0], Ninc[0]), intent=Intent.backp))
+            pts.append(DataPoint(newx, new_bkgmeastime / 2.0, mnum, (T, dT, L, dL, Nbkgm[0], Ninc[0]), intent=Intent.backm))
 
-        Returns:
-        a DataPoint object containing the new point with simulated data
-        """
-
-        top_n = self._find_fom_maxima(step.scaled_foms, start=start)
-
-        if len(top_n):
-            # generate a DataPoint object with the maximum point
-            _, mnum, idx = top_n
-            maxfom = step.foms[mnum][idx]       # use unscaled version for plotting
-            newx = self.x[mnum][idx]
-            new_meastime = max(step.meastimes[mnum][idx], self.min_meas_time)
-
-            return self._generate_new_point(mnum, newx, new_meastime, maxfom=maxfom)
-
-        else:
-
-            return None
+        return pts
 
     def save(self, fn) -> None:
         """Save a pickled version of the experiment"""
@@ -850,9 +900,11 @@ class SimReflExperimentControl(SimReflExperiment):
 
         for mnum, (newx, mtimeweight) in enumerate(zip(self.x, self.meastimeweights)):
             for x, t in zip(newx, total_time * mtimeweight):
-                pt = self._generate_new_point(mnum, x, t, None)
-                pt.movet = self.instrument.movetime(x)[0]
-                points.append(pt)
+                # TODO: figure out how to do background measurements for control points
+                pts = self._generate_new_point(mnum, x, t, 0.0, None)
+                pts[0].movet = self.instrument.movetime(x)[0]
+                for pt in pts:
+                    points.append(pt)
                 self.instrument.x = x    
 
         self.add_step(points)
