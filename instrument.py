@@ -143,7 +143,7 @@ class ReflectometerBase(object):
                                     backgrounds where a constant footprint is desired but theta
                                     deviates from the specular condition
         """
-        if self.fixed_slits is not None:
+        if self.fixed_slits is None:
             
             x = np.array(x, ndmin=1)
 
