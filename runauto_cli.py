@@ -31,6 +31,9 @@ Optionsl arguments:
 --model_weights -- weights for the models (only used with --control). Does not have to be
                     normalized to unity
 
+--frac_background -- fraction of time spent on backgrounds (only used with --control). Defaults
+                    to 0.33
+
 --eta -- confidence interval parameter; default 0.68. Ignored for controls.
 
 --npoints -- number of points to simulate/measure at a time (uses forecasting)
@@ -107,6 +110,7 @@ parser.add_argument('--nomovie', action='store_true')
 parser.add_argument('--sel', type=int, nargs='+')
 parser.add_argument('--meas_bkg', type=float, nargs='+')
 parser.add_argument('--model_weights', type=float, nargs='+')
+parser.add_argument('--frac_background', type=float, default=0.33)
 parser.add_argument('--eta', type=float, default=0.68)
 parser.add_argument('--alpha', type=float, default=0.001)
 parser.add_argument('--npoints', type=int, default=1)
@@ -233,7 +237,7 @@ if __name__ == '__main__':
                 model_weights = args.model_weights
 
             for kk in range(args.nrepeats):
-                exp = SimReflExperimentControl(model, measQ, instrument=instr, model_weights=model_weights, eta=args.eta, fit_options=fit_options, oversampling=args.oversampling, bestpars=bestp, select_pars=sel, meas_bkg=meas_bkg, entropy_options=entropy_options)
+                exp = SimReflExperimentControl(model, measQ, instrument=instr, model_weights=model_weights, frac_background=args.frac_background, eta=args.eta, fit_options=fit_options, oversampling=args.oversampling, bestpars=bestp, select_pars=sel, meas_bkg=meas_bkg, entropy_options=entropy_options)
                 if args.instrument == 'CANDOR':
                     for i, measQ in enumerate(exp.measQ):
                         x = list()
