@@ -3,6 +3,8 @@ import copy
 import time
 import dill
 from typing import Tuple, Union, List
+from threading import Event, Semaphore
+from queue import Queue
 
 from bumps.fitters import ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
@@ -13,12 +15,12 @@ from scipy.interpolate import interp1d
 # local imports
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
 from datastruct import DataPoint, ExperimentStep, Intent
-from reduction import DataPoint2ReflData, interpolate_background, reduce
+from reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
 from inference import MPMapper, _MP_calc_qprofile, DreamFitPlus, default_fit_options
 from simulation import sim_data_N, calc_expected_R
 import instrument
 
-class AutoReflBase:
+class AutoReflBase(object):
     """
     Autonomous reflectometry experiment base class
 
@@ -150,14 +152,17 @@ class AutoReflBase:
         # returns all data points associated with model with index modelnum
         return [pt for step in self.steps for pt in step.points if pt.model == modelnum]
 
-    def get_data(self) -> List[Tuple[List[DataPoint], List[DataPoint], List[DataPoint]]]:
+    def get_data(self) -> List[Tuple[ReflData, Union[ReflData, None],
+                                     Union[ReflData, None]]]:
 
         modeldata = list()
-        for i in range(self.nmodels):
+        for i, mQ in enumerate(self.measQ):
             specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
             bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
             bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
-            modeldata.append((specdata, bkgpdata, bkgmdata))
+            modeldata.append((DataPoint2ReflData(mQ, specdata),
+                              DataPoint2ReflData(mQ, bkgpdata),
+                              DataPoint2ReflData(mQ, bkgmdata)))
 
         return modeldata
 
@@ -812,3 +817,85 @@ class AutoReflBase:
         
         return exp
 
+
+class AutoReflExperiment(AutoReflBase):
+    """
+    Autonomous reflectometry experiment with instrument control.
+
+    Only works with single-model problems at the moment.
+
+    Additional Inputs:
+
+    measurement_queue -- queue.Queue for holding the measurement queue. Required.
+    event_meas_avail -- threading.Event for signaling that new data have been added to the queue
+    filename -- string representing the filename. Recommended to have a scheme to use a unique name.
+
+    """
+
+    def __init__(self, measurement_queue: Queue,
+                       event_meas_avail: Event,
+                       filename: str,
+                       problem: FitProblem,
+                       Q: Union[np.ndarray, List[np.ndarray]],
+                       instrument: instrument.ReflectometerBase = instrument.MAGIK(),
+                       eta: float = 0.68,
+                       npoints: int = 1,
+                       switch_penalty: float = 1.0,
+                       switch_time_penalty: float = 0.0,
+                       fit_options: dict = default_fit_options,
+                       entropy_options: dict = default_entropy_options,
+                       oversampling: int = 11,
+                       meas_bkg: Union[float, List[float]] = 1e-6,
+                       startmodel: int = 0,
+                       min_meas_time: float = 10.0,
+                       select_pars: Union[list, None] = None) -> None:
+        
+        super().__init__(problem, Q, instrument, eta, npoints, switch_penalty,
+                       switch_time_penalty, fit_options, entropy_options, oversampling,
+                       meas_bkg, startmodel, min_meas_time, select_pars)
+
+        self.filename = filename
+        self.measurement_queue = measurement_queue
+        self.event_meas_avail = event_meas_avail
+
+    def get_data(self) -> List[Tuple[ReflData, Union[ReflData, None],
+                                     Union[ReflData, None]]]:
+
+        data = self.instrument.load_data(self.filename)
+
+        #for dataset in data:
+        #    pass
+
+        # TODO: make sure each entry is intensity normalized!
+        return data
+
+    def request_data(self, newpoints, foms) -> None:
+        """
+        Requests new data. Add new data points to a measurement point queue to be measured
+        """
+        
+        def create_msg(step_id: int, point_id: int, x: float, t: float, intent: Intent):
+
+            return {'step_ID': step_id,
+                    'point_ID': point_id,
+                    'filename': self.filename,
+                    'movements': self.instrument.trajectoryData(x, intent),
+                    'count_time': str(t)}
+
+        if self.event_meas_avail.is_set():
+            print('Warning: previous queue has not been read prior to update')
+
+        # Clear measurement queue in a thread-safe manner
+        with self.measurement_queue.mutex:
+            self.measurement_queue.queue.clear()
+
+        for pt in newpoints:
+            _, _, newx, new_meastime, new_bkgmeastime = pt
+
+            self.measurement_queue.put(create_msg(newx, new_meastime, Intent.spec))
+
+            if new_bkgmeastime > 0:
+                self.measurement_queue.put(create_msg(newx, new_bkgmeastime / 2.0, Intent.backp))
+                self.measurement_queue.put(create_msg(newx, new_bkgmeastime / 2.0, Intent.backm))
+
+        self.event_meas_avail.set()
