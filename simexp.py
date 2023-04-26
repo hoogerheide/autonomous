@@ -172,15 +172,22 @@ class SimReflExperiment(object):
         # returns all data points associated with model with index modelnum
         return [pt for step in self.steps for pt in step.points if pt.model == modelnum]
 
-    def getdata(self, attr: str, modelnum: Union[int, None]) -> list:
-        # returns all data of type "attr" for a specific model
-        return [getattr(pt, attr) for pt in self.get_all_points(modelnum)]
-
     def compile_datapoints(self, Qbasis, points) -> Tuple:
         # bins all of the data from a list "points" onto a Q-space "Qbasis"
         idata = [[val for pt in points for val in getattr(pt, attr)] for attr in data_attributes]
 
         return ar.compile_data_N(Qbasis, *idata)
+
+    def get_data(self) -> List[Tuple[List[DataPoint], List[DataPoint], List[DataPoint]]]:
+
+        modeldata = list()
+        for i in range(self.nmodels):
+            specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
+            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
+            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
+            modeldata.append((specdata, bkgpdata, bkgmdata))
+
+        return modeldata
 
     def add_initial_step(self, dRoR=10.0) -> None:
         """ Generate initial data set. This is only necessary because of the requirement that
@@ -251,10 +258,9 @@ class SimReflExperiment(object):
     def update_models(self) -> None:
         # Update the models in the fit problem with new data points. Should be run every time
         # new data are to be incorporated into the model
-        for i, (m, measQ) in enumerate(zip(self.models, self.measQ)):
-            specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
-            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
-            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
+        modeldata = self.get_data()
+        
+        for m, measQ, (specdata, bkgpdata, bkgmdata) in zip(self.models, self.measQ, modeldata):
             spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
             #mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = self.compile_datapoints(measQ, self.get_all_points(i))
             mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
@@ -379,10 +385,17 @@ class SimReflExperiment(object):
         # TODO: current analysis code can't handle multiple foms, could pass all of them in here
         step.foms, step.meastimes, step.bkgmeastimes = foms[0], meastimes[0], bkgmeastimes[0]
 
+        self.request_data(newpoints, foms)
+
+    def request_data(self, newpoints, foms) -> None:
+        """
+        Requests new data. In simulation mode, generates new data points. In experiment mode, should
+        add new data points to a point queue to be measured
+        """
+        
         # Determine next measurement point(s).
         # Number of points to be used is determined from n_forecast (self.npoints)
-        # NOTE: At some point this could be turned into an asynchronous "point queue"; in this case the following loop will have to be
-        #       over self.npoints
+
         points = []
         for pt, fom in zip(newpoints, foms):
             mnum, idx, newx, new_meastime, new_bkgmeastime = pt
