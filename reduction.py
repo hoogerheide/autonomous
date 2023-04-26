@@ -97,7 +97,7 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[
 
         return None
 
-def reduce(Qbasis, specdata: List[DataPoint], backp: List[DataPoint], backm: List[DataPoint], normbase='time'):
+def reduce(Qbasis, specdata: List[DataPoint], backp: List[DataPoint], backm: List[DataPoint], normbase='none'):
     """Reduces data
     
         1. Bin all data
@@ -109,7 +109,7 @@ def reduce(Qbasis, specdata: List[DataPoint], backp: List[DataPoint], backm: Lis
         specdata -- list of DataPoint objects containing specular data
         backp -- list of DataPoint objects containing back+ data
         backm -- list of DataPoint objects containing back- data
-        normbase -- how to normalize data (default 'time')
+        normbase -- how to normalize data (default 'none')
         """
 
     spec = DataPoint2ReflData(Qbasis, specdata, normbase=normbase)
