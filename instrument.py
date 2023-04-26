@@ -206,6 +206,29 @@ class ReflectometerBase(object):
 
             return t
 
+    def trajectoryMotors(self) -> List[str]:
+        """
+        Generates list of motors moved for trajectory
+        """
+
+        return []
+
+    def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
+        """
+        Generates string for NICE instrument control movement.
+
+        Backgrounds are implemented as sample angle movements. Assumes detectorTableMotor has been
+        zeroed for the bank of interest
+
+        Inputs:
+        x -- the (single) x value at which to generate trajectory movement string
+        intent -- sets the intent of the measurement (specular, backp, or backm). Compared against
+                    reflred.intent.Intent.(spec, backp, or backm)
+        dtheta_bkg (default=0.5) -- angle offset in degrees for backp and backm measurements
+        """
+
+        return []
+
     def load_data(self, filename: str) -> Tuple[ReflData, ReflData, ReflData]:
         """
         Loads data of the appropriate type
@@ -296,7 +319,7 @@ class MAGIK(ReflectometerBase):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
 
-    def trajectoryMotors(self):
+    def trajectoryMotors(self) -> List[str]:
         """
         Generates list of motors moved for trajectory
         """
@@ -304,7 +327,7 @@ class MAGIK(ReflectometerBase):
         return ['detectorAngle', 'sampleAngle', 'slitAperture1','slitAperture2', 'slitAperture3',
                 'slitAperture4']
 
-    def trajectoryData(self, x, intent, dtheta_bkg=0.5):
+    def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
         Generates string for NICE instrument control movement.
 
@@ -443,7 +466,7 @@ class CANDOR(ReflectometerBase):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
 
-    def trajectoryMotors(self):
+    def trajectoryMotors(self) -> List[str]:
         """
         Generates list of motors moved for trajectory
         """
@@ -451,7 +474,7 @@ class CANDOR(ReflectometerBase):
         return ['detectorArmAngle', 'sampleAngle', 'slitAperture1', 'slitAperture2',
                 'slitAperture3']
 
-    def trajectoryData(self, x, intent, dtheta_bkg=0.5):
+    def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
         Generates string for NICE instrument control movement.
 
