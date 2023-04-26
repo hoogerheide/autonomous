@@ -10,9 +10,9 @@ from matplotlib.gridspec import GridSpec
 
 Color = Union[Tuple[float, float, float] , str]
 
-import autorefl as ar
-from simexp import SimReflExperiment, SimReflExperimentControl, ExperimentStep
-from datastruct import data_tuple
+from simexp import SimReflExperiment, SimReflExperimentControl
+from datastruct import ExperimentStep, Intent
+from reduction import reduce, ReflData
 
 
 def get_steps_time(steps: List[ExperimentStep], control: bool = False) -> np.ndarray:
@@ -43,7 +43,7 @@ def get_parameter_variance(steps: List[ExperimentStep], control: bool = False) -
 def plot_qprofiles(Qth: np.ndarray,
                    qprofs: np.ndarray,
                    logps: np.ndarray,
-                   data=data_tuple,
+                   data=ReflData,
                    ax: Union[Axis, None] = None,
                    exclude_from: int = 0,
                    power: int = 4) -> Tuple[Figure, Tuple[Axis, Axis, Axis]]:
@@ -54,7 +54,7 @@ def plot_qprofiles(Qth: np.ndarray,
         fig = ax.figure.canvas
 
     if data is not None:
-        _, _, _, _, Rs, dRs, Qs, _ = ar.compile_data_N(Qth, *data)
+        Rs, dRs, Qs = data.v, data.dv, data.Qz
         #print('plot_qprofiles: ', len(Qs), Qs)
         if len(Qs) > 0:
             ax.errorbar(Qs[exclude_from:], (Rs*Qs**power)[exclude_from:], (dRs*Qs**power)[exclude_from:], fmt='o', color='k', markersize=10, alpha=0.4, capsize=8, linewidth=3, zorder=100)
@@ -220,12 +220,20 @@ def snapshot(exp: SimReflExperiment,
     #print(np.array(step.qprofs).shape, step.draw.logp.shape)
     foms = step.foms if step.foms is not None else [np.full_like(np.array(x), np.nan) for x in exp.x]
     qprofs = step.qprofs if step.qprofs is not None else [np.full_like(np.array(measQ), np.nan) for measQ in exp.measQ]
-    for i, (measQ, qprof, x, fom, axtop, axbot) in enumerate(zip(exp.measQ, qprofs, exp.x, foms, axtops, axbots)):
-        plotpoints = [pt for step in exp.steps[:(j+1)] if step.use for pt in step.points if pt.model == i]
+
+    modeldata = list()
+    for i in range(exp.nmodels):
+        specdata = [pt for step in exp.steps[:(j+1)] if step.use for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
+        bkgpdata = [pt for step in exp.steps[:(j+1)] if step.use for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
+        bkgmdata = [pt for step in exp.steps[:(j+1)] if step.use for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
+        modeldata.append((specdata, bkgpdata, bkgmdata))
+
+    for i, (measQ, qprof, x, fom, axtop, axbot, mdata) in enumerate(zip(exp.measQ, qprofs, exp.x, foms, axtops, axbots, modeldata)):
+        specdata, bkgpdata, bkgmdata = mdata
+        red_spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
         #print(*[[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list])
         #idata = [[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list]
-        idata = [[val for pt in plotpoints for val in getattr(pt, attr)] for attr in exp.attr_list]
-        plot_qprofiles(copy.copy(measQ), qprof, step.draw.logp, data=idata, ax=axtop, power=power)
+        plot_qprofiles(copy.copy(measQ), qprof, step.draw.logp, data=red_spec, ax=axtop, power=power)
         axtop.set_title(f'meas t = {steptimes[i]:0.0f} s\nmove t = {movetimes[i]:0.0f} s', fontsize='larger')
         axbot.plot(x, fom, linewidth=3, color='C0')
         if (j + 1) < len(exp.steps):
