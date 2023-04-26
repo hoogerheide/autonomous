@@ -523,7 +523,8 @@ class SimReflExperiment(object):
         xdbkgs = list()
         xqprofs = list()
         init_time = time.time()
-        for mnum, (xs, Qth, qprof, qbkg_default) in enumerate(zip(self.x, self.measQ, qprofs, self.meas_bkg)):
+        modeldata = self.get_data()
+        for mnum, (xs, Qth, qprof, qbkg_default, mdata) in enumerate(zip(self.x, self.measQ, qprofs, self.meas_bkg, modeldata)):
 
             # get the incident intensity and q values for all x values (should have same shape X x D).
             # flattened dimension is XD
@@ -534,9 +535,7 @@ class SimReflExperiment(object):
 
             # calculate the existing background uncertainty. This is used to determine if additional
             # background measurements must be performed
-            specdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.spec)]
-            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backp) & step.use]
-            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == mnum) & (pt.intent == Intent.backm) & step.use]
+            specdata, bkgpdata, bkgmdata = mdata
             spec = DataPoint2ReflData(Qth, specdata)
             bkgp = DataPoint2ReflData(Qth, bkgpdata)
             bkgm = DataPoint2ReflData(Qth, bkgmdata)
@@ -563,11 +562,14 @@ class SimReflExperiment(object):
                 plt.yscale('log')
                 plt.show()
 
-            # define signal to background. For now, this is just a scaling factor on the effective rate
-            # reference: Hoogerheide et al. J Appl. Cryst. 2022
-            sbr = qprof / qbkg
-            #refl = qprof/(1+2/sbr)
-            refl = np.clip(qprof, a_min=0, a_max=None)
+            if False:
+                # define signal to background. For now, this is just a scaling factor on the effective rate
+                # reference: Hoogerheide et al. J Appl. Cryst. 2022
+                sbr = qprof / qbkg
+                refl = qprof/(1+2/sbr)
+                refl = np.clip(refl, a_min=0, a_max=None)
+            else:
+                refl = np.clip(qprof, a_min=0, a_max=None)
             
             # perform interpolation. xqprof should have shape N x XD. This is a slow step (and should only be done once)
             interp_refl = interp1d(Qth, refl, axis=1, fill_value=(refl[:,0], refl[:,-1]), bounds_error=False)
