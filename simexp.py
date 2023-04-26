@@ -256,19 +256,22 @@ class SimReflExperiment(object):
         modeldata = self.get_data()
 
         for m, measQ, (specdata, bkgpdata, bkgmdata) in zip(self.models, self.measQ, modeldata):
+            # run reduction
+            # TODO: instrument-specific reduction
             spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
-            #mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = self.compile_datapoints(measQ, self.get_all_points(i))
+
             mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
                             spec.detector.wavelength, spec.detector.wavelength_resolution,  \
                             spec.v, spec.dv, spec.Qz, spec.dQ
-
-            #print(mT, mdT, mL, mdL, mR, mdR, mQ, mdQ)
 
             m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
             m.fitness.probe.oversample(self.oversampling)
             m.fitness.probe.resolution = self.instrument.resolution
             m.fitness.update()
         
+        # protect against too few data points
+        self.problem.partial = True
+
         # Triggers recalculation of all models
         self.problem.model_reset()
         self.problem.chisq_str()
