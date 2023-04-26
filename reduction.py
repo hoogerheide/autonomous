@@ -100,8 +100,11 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[
 
         return None
 
-def reduce(Qbasis, specdata: List[DataPoint], backp: List[DataPoint], backm: List[DataPoint], normbase='none'):
-    """Reduces data
+def reduce_datapoints(Qbasis: np.ndarray, specdata: List[DataPoint],
+                        backp: Union[List[DataPoint], None], backm: Union[List[DataPoint], None],
+                        normbase='none'):
+
+    """Reduces data from lists of data points
     
         1. Bin all data
         2. Subtract background
@@ -119,6 +122,12 @@ def reduce(Qbasis, specdata: List[DataPoint], backp: List[DataPoint], backm: Lis
     bkgp = DataPoint2ReflData(Qbasis, backp, normbase=normbase) if backp is not None else None
     bkgm = DataPoint2ReflData(Qbasis, backm, normbase=normbase) if backm is not None else None
 
+    return reduce(Qbasis, spec, bkgp, bkgm)
+
+def reduce(spec: ReflData, bkgp: Union[ReflData, None], bkgm: Union[ReflData, None]):
+    """
+    Reduce data from ReflData objects
+    """
     if spec is not None:
 
         # subtract background
