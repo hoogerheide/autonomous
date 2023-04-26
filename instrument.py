@@ -1,9 +1,12 @@
 import numpy as np
 import json
 import warnings
-from reflred.candor import edges
+from typing import Tuple, List, Union
+from reflred.candor import edges, Candor
 from reflred.resolution import divergence
 from reflred.intent import Intent
+from reflred.nexusref import NCNRNeXusRefl, load_nexus_entries
+from reflred.refldata import ReflData
 
 def q2a(q, L):
     return np.degrees(np.arcsin(np.array(q)*L/(4*np.pi)))
@@ -40,6 +43,10 @@ class ReflectometerBase(object):
         self._mon0 = 0.0
         self._mon1 = 1.0
         self._Qpow = 2.0
+        
+        # Loader-specific parameters
+        self._data_loader = None
+        self._data_type = None
 
     def x2q(self, x):
         pass
@@ -199,6 +206,17 @@ class ReflectometerBase(object):
 
             return t
 
+    def load_data(self, filename: str) -> Tuple[ReflData, ReflData, ReflData]:
+        """
+        Loads data of the appropriate type
+        """
+
+        spec, bkgp, bkgm = (self._data_type(
+                                load_nexus_entries(filename, None, entry, False, self._data_loader))
+                                for entry in ['spec', 'bkgp', 'bkgm'])
+
+        return spec, bkgp, bkgm
+
 class MAGIK(ReflectometerBase):
     """ MAGIK Reflectometer
     x = Q """
@@ -231,6 +249,10 @@ class MAGIK(ReflectometerBase):
         self._mon0 = 30.0
         self._mon1 = 1250.
         self._Qpow = 2.0
+
+        # data loader
+        self._data_loader = NCNRNeXusRefl
+        self._data_type = ReflData
 
         # load calibration files
         try:
@@ -355,6 +377,10 @@ class CANDOR(ReflectometerBase):
         self._mon0 = 20.0
         self._mon1 = 20000.
         self._Qpow = 3.0
+
+        # data loading
+        self._data_type = Candor
+        self._data_loader = Candor
 
         # load wavelength calibration
         wvcal = np.flipud(np.loadtxt(f'calibration/DetectorWavelengths_PG_integrate_sumeff_bank{bank}.csv', delimiter=',', usecols=[1, 2]))
