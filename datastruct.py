@@ -64,12 +64,21 @@ class DataPoint(object):
 
     def __repr__(self):
 
-        try:
-            reprq = 'Q: %0.4f Ang^-1' % self.Q()
-        except TypeError:
-            reprq = 'Q: ' + ', '.join('{:0.4f}'.format(q) for q in self.Q()) + ' Ang^-1'
+        def format_obj(obj, fmt: str) -> str:
+
+            if isinstance(obj, np.ndarray) | isinstance(obj, list):
+                return ', '.join(format_obj(itm, fmt) for itm in obj)
+            else:
+                return f'{obj:{fmt}}'
+
+#        try:
+        qrep = format_obj(self.Q(), '0.4f')
+        reprq = f'Q: {qrep} Ang^-1'
+#        except TypeError:
+#            reprq = 'Q: ' + ', '.join('{:0.4f}'.format(q) for q in self.Q()) + ' Ang^-1'
         
-        return ('Model: %i\t' % self.model) + reprq + ('\tIntent: ' + self.intent) + ('\tTime: %0.1f s' %  self.t) + ('\tCounts: %i' % self.N)
+        nrep = format_obj(self.N, '0.0f')
+        return ('Model: %i\t' % self.model) + reprq + ('\tIntent: ' + self.intent) + ('\tTime: %0.1f s' %  self.t) + f'\tCounts: {nrep}'
 
     @property
     def data(self):
