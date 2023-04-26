@@ -64,9 +64,12 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[
         #argsort = np.argsort(idata['T'])
         t = idata['t'][:, None, None]
         v = idata['N'][:, None, None]
-        v += (v == 0)
+#        v += (v == 0)
         dv = np.sqrt(v)
+        dv += (dv == 0)
+
         vinc = idata['Ninc'][:, None, None]
+#        vinc += (vinc == 0)
         dvinc = np.sqrt(vinc)
         T, dT, L, dL = (idata[key][:, None, None] for key in ['T', 'dT', 'L', 'dL'])
         wavelength_resolution = dL / L
@@ -89,7 +92,7 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[
         qz, dq, v, dv, _Ti, _dT, _L, _dL = _rebin_bank(inc, 0, q_edges, 'poisson')
         inc = QData(data, qz, dq, v, dv, _Ti, _dT, _L, _dL)
 
-        apply_intensity_norm(data, inc, align_by='detector.angle_x')
+        apply_intensity_norm(data, inc, align_by='Qz')
 
         return data
     
