@@ -879,6 +879,7 @@ class SimReflExperimentControl(SimReflExperiment):
     def __init__(self, problem: FitProblem,
                        Q: Union[np.ndarray, List[np.ndarray]],
                        model_weights: Union[List[float], None] = None,
+                       frac_background: float = 0.33,
                        instrument: instrument.ReflectometerBase = instrument.MAGIK(),
                        eta: float = 0.68,
                        npoints: int = 1,
@@ -906,6 +907,8 @@ class SimReflExperimentControl(SimReflExperiment):
             f = self.instrument.meastime(x, weight)
             self.meastimeweights.append(f)
 
+        self.frac_background = frac_background
+
     def take_step(self, total_time: float) -> None:
         r"""Overrides SimReflExperiment.take_step
         
@@ -917,8 +920,7 @@ class SimReflExperimentControl(SimReflExperiment):
 
         for mnum, (newx, mtimeweight) in enumerate(zip(self.x, self.meastimeweights)):
             for x, t in zip(newx, total_time * mtimeweight):
-                # TODO: figure out how to do background measurements for control points
-                pts = self._generate_new_point(mnum, x, t, 0.0, None)
+                pts = self._generate_new_point(mnum, x, t * (1 - self.frac_background), t * self.frac_background, None)
                 pts[0].movet = self.instrument.movetime(x)[0]
                 for pt in pts:
                     points.append(pt)
