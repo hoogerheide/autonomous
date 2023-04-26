@@ -6,15 +6,16 @@ from typing import Tuple, Union, List
 
 from bumps.fitters import ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
-from bumps.mapper import MPMapper
 
 from refl1d.names import FitProblem, Experiment
 from scipy.interpolate import interp1d
 
+# local imports
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
-from datastruct import DataPoint, ExperimentStep, data_attributes, Intent
+from datastruct import DataPoint, ExperimentStep, Intent
 from reduction import DataPoint2ReflData, interpolate_background, reduce
-import autorefl as ar
+from inference import MPMapper, _MP_calc_qprofile, DreamFitPlus
+from simulation import sim_data_N, calc_expected_R
 import instrument
 
 fit_options = {'pop': 10, 'burn': 1000, 'steps': 500, 'init': 'lhs', 'alpha': 0.001}
@@ -172,12 +173,6 @@ class SimReflExperiment(object):
         # returns all data points associated with model with index modelnum
         return [pt for step in self.steps for pt in step.points if pt.model == modelnum]
 
-    def compile_datapoints(self, Qbasis, points) -> Tuple:
-        # bins all of the data from a list "points" onto a Q-space "Qbasis"
-        idata = [[val for pt in points for val in getattr(pt, attr)] for attr in data_attributes]
-
-        return ar.compile_data_N(Qbasis, *idata)
-
     def get_data(self) -> List[Tuple[List[DataPoint], List[DataPoint], List[DataPoint]]]:
 
         modeldata = list()
@@ -238,7 +233,7 @@ class SimReflExperiment(object):
             target_incident_neutrons = targetN / newR
 
             # simulate the data
-            Ns, Nbkgs, Nincs = ar.sim_data_N(newR, target_incident_neutrons, resid_bkg=resid_bkg, meas_bkg=meas_bkg)
+            Ns, Nbkgs, Nincs = sim_data_N(newR, target_incident_neutrons, resid_bkg=resid_bkg, meas_bkg=meas_bkg)
 
             # Calculate T, dT, L, dL. Note that because these data don't constrain the model at all,
             # these values are brought in from MAGIK (not instrument-specific) because they don't need
@@ -259,7 +254,7 @@ class SimReflExperiment(object):
         # Update the models in the fit problem with new data points. Should be run every time
         # new data are to be incorporated into the model
         modeldata = self.get_data()
-        
+
         for m, measQ, (specdata, bkgpdata, bkgmdata) in zip(self.models, self.measQ, modeldata):
             spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
             #mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = self.compile_datapoints(measQ, self.get_all_points(i))
@@ -314,7 +309,7 @@ class SimReflExperiment(object):
             monitor = ConsoleMonitor(self.problem)
         
         # Condition and run fit
-        fitter = ar.DreamFitPlus(self.problem)
+        fitter = DreamFitPlus(self.problem)
         options=_fill_defaults(self.fit_options, fitter.settings)
         result = fitter.solve(mapper=mapper, monitors=[monitor], initial_population=self.restart_pop, **options)
 
@@ -840,10 +835,10 @@ class SimReflExperiment(object):
             except AttributeError:
                 to_calc = 0.0
 
-        calcR = ar.calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
+        calcR = calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
         #print('expected R:', calcR)
         incident_neutrons = self.instrument.intensity(newx) * new_meastime
-        N, Nbkg, Ninc = ar.sim_data_N(calcR, incident_neutrons, resid_bkg=self.resid_bkg[mnum], meas_bkg=self.meas_bkg[mnum])
+        N, Nbkg, Ninc = sim_data_N(calcR, incident_neutrons, resid_bkg=self.resid_bkg[mnum], meas_bkg=self.meas_bkg[mnum])
         Nbkgp, Nbkgm = Nbkg
         pts = [DataPoint(newx, new_meastime, mnum, (T, dT, L, dL, N[0], Ninc[0]), merit=maxfom, intent=Intent.spec)]
 
@@ -940,45 +935,3 @@ class SimReflExperimentControl(SimReflExperiment):
                 self.instrument.x = x    
 
         self.add_step(points)
-
-def _MP_calc_qprofile(problem_point_pair):
-    """ Calculate q profiles based on a sample draw, for use with
-        multiprocessing
-
-        Adapted from refl1d.mapper
-    """
-
-    # given a problem and a sample draw and a Q-vector, calculate the profiles associated with each sample
-    problem_id, point = problem_point_pair
-    if problem_id != MPMapper.problem_id:
-        #print(f"Fetching problem {problem_id} from namespace")
-        # Problem is pickled using dill when it is available
-        try:
-            import dill
-            MPMapper.problem = dill.loads(MPMapper.namespace.pickled_problem)
-        except ImportError:
-            MPMapper.problem = MPMapper.namespace.problem
-        MPMapper.problem_id = problem_id
-    return _calc_qprofile(MPMapper.problem, point)
-
-def _calc_qprofile(calcproblem, point):
-    """Calculation function of q profiles using _MP_calc_qprofiles
-    
-    Inputs:
-    calcproblem -- a bumps.BaseFitProblem or bumps.MultiFitProblem, prepopulated
-                    with attributes:
-                        calcTdTLdL (derived from SimReflExperiment.measQ via Q2TdTLdL);
-                        oversampling
-                        resolution (either 'normal' or 'uniform', instrument-dependent)
-    point -- parameter vector
-    """
-    
-    mlist = [calcproblem] if hasattr(calcproblem, 'fitness') else list(calcproblem.models)
-    qprof = list()
-    for m, newvar in zip(mlist, calcproblem.calcTdTLdL):
-        calcproblem.setp(point)
-        calcproblem.chisq_str()
-        Rth = ar.calc_expected_R(m.fitness, *newvar, oversampling=calcproblem.oversampling, resolution=calcproblem.resolution)
-        qprof.append(Rth)
-
-    return qprof
