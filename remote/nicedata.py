@@ -9,6 +9,7 @@ import numpy as np
 # NICE import
 import sys
 from nicepath import nicepath
+sys.path.append('..')
 sys.path.append(nicepath)
 import nice.datastream
 import nice.core
@@ -55,6 +56,9 @@ class Signaller:
 
         # Measurement point queue (frequently flushed and updated after each analysis step)
         self.measurement_queue = Queue()
+
+        # Queue for storing information about current measurement
+        self.current_measurement = Queue()
 
         # Data queue for temporarily storing new data points
         self.data_queue = Queue()
@@ -132,11 +136,10 @@ class DataQueueListener(StoppableThread):
 
             # event will be triggered upon stop as well
             if not self.stopped():
-                #with self.signals.data_queue.mutex:
-                for _ in range(self.signals.data_queue.qsize()):
-                    record = self.signals.data_queue.get()
-                    self.data.append(self._record_to_datapoint(record))
-                    print(record)
+                basedatapoint = self.signals.current_measurement.get()
+                data = self.signals.data_queue.get()
+                self.data.append(self._record_to_datapoint(basedatapoint, data))
+                print(data)
             
                 print(f'DataQueueListener: resetting new_data_acquired')
 
@@ -146,9 +149,13 @@ class DataQueueListener(StoppableThread):
             else:
                 break
 
-    def _record_to_datapoint(self, record):
+    def _record_to_datapoint(self, basedatapoint, data):
         """Converts a NICE dictionary to a DataPoint object"""
-        return record
+        #T = record['data']['detectorAngle'] / 2.0
+        
+        print(f'Base data: {basedatapoint}\nNew data: {data}')
+        
+        return data
 
     def stop(self):
         super().stop()
@@ -234,14 +241,14 @@ class MeasurementHandler(NICEInteractor):
         nmoves = 0
 
         # start trajectory
-        api.startTrajectory(1, motors_to_move, 'test', 'entry', None, 'test_traj', True)
+        api.startTrajectory(1, motors_to_move, 'test', None, None, 'test_traj', True)
 
         # TODO: start 3 scans for spec, bkgp, bkgm
         # TODO: can we implement a system to look at existing background data and calculate
         # uncertainties on all putative measurement points? If expected uncertainty in measured
         # data is less than the interpolated uncertainty in the background, then don't bother
         # measuring the background
-        api.startScan(1, motors_to_move, 'test', 'entry', None, 'test_traj', True)
+        api.startScan(1, motors_to_move, 'test', 'specular', None, 'test_traj', False)
 
         # blocking: will wait until configuration comes through
         self.signals.new_trajectory_acquired.wait()
@@ -281,8 +288,11 @@ class MeasurementHandler(NICEInteractor):
                 for pt in meas_list:
 
                     print(f'MeasurementHandler: measuring {pt}')
+                    self.signals.current_measurement.put(pt)
 
                     if not self.stopped():
+
+                        api.startCount(1, motors_to_move, 'test', pt['intent'], filename, 'test_traj', False)
 
                         # blocking
                         self.signals.current_instrument_x.get()
@@ -296,12 +306,12 @@ class MeasurementHandler(NICEInteractor):
                             print(f'MeasurementHandler: counting')
                             self.counter = StoppableNiceCounter(api, (pt['count_time'], -1, -1, ''))
 
-                            api.startCount(1, motors_to_move, 'test', 'entry', filename, 'test_traj', True)
                             #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
                             self.counter.start()
                             self.counter.join()
                             self.counter.stop()
-                            api.endCount(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
+                        
+                        api.endCount(1, motors_to_move, 'test', pt['intent'], filename, 'test_traj')
 
                         print(f'MeasurementHandler: resetting event_ready')
                     
@@ -314,8 +324,8 @@ class MeasurementHandler(NICEInteractor):
             else:
                 break
 
-        api.endScan(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
-        api.endTrajectory(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
+        api.endScan(1, motors_to_move, 'test', 'specular', filename, 'test_traj')
+        api.endTrajectory(1, motors_to_move, 'test', None, filename, 'test_traj')
 
         # TODO: enable for production
         #api.unlock()
