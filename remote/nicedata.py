@@ -6,10 +6,11 @@ from queue import Queue
 # temp
 import numpy as np
 
+from datastruct import DataPoint, MeasurementPoint
+
 # NICE import
 import sys
 from nicepath import nicepath
-sys.path.append('..')
 sys.path.append(nicepath)
 import nice.datastream
 import nice.core
