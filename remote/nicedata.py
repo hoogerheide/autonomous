@@ -1,11 +1,12 @@
 import time
-from threading import Event, Timer
+from threading import Event, Timer, Condition
 from util import StoppableThread, NICEInteractor
 from queue import Queue
 
 # temp
 import numpy as np
 
+# NICE import
 import sys
 from nicepath import nicepath
 sys.path.append(nicepath)
@@ -13,15 +14,61 @@ import nice.datastream
 import nice.core
 import nice.writer
 
+class Signaller:
+    """
+    Container class for all required events, conditions, and queues
+    """
+
+    def __init__(self) -> None:
+
+        ### Events
+
+        # Starts the measurement loop (may not be necessary)
+        self.global_start = Event()
+
+        # Stops the measurement loop
+        self.global_stop = Event()
+
+        # Signals that the measurement queue has been updated
+        self.measurement_queue_updated = Event()
+
+        # Signals that a new data point has been acquired
+        self.new_data_acquired = Event()
+
+        # Signals that a new trajectory definition has been acquired
+        self.new_trajectory_acquired = Event()
+
+        # Signals that the measurement queue is empty (more data needed)
+        self.measurement_queue_empty = Event()
+
+        # Signals that an analysis fit has converged (use if fitting process is split)
+        self.fit_converged = Event()
+
+        # Signals that the first measurement is complete after updating the measurement queue
+        self.first_measurement_complete = Event()
+
+        ### Queues
+
+        # Current instrument position (initialized to None)
+        self.current_instrument_x = Queue()
+        self.current_instrument_x.put(None)
+
+        # Measurement point queue (frequently flushed and updated after each analysis step)
+        self.measurement_queue = Queue()
+
+        # Data queue for temporarily storing new data points
+        self.data_queue = Queue()
+
+        # Trajectory queue for storing new trajectory definitions (should not be needed)
+        self.trajectory_queue = Queue()
+
 class DataListener(nice.datastream.NiceData):
     """
     Message processor for data stream.
     """
 
-    def __init__(self, queue: Queue, event_newdata: Event, event_ready: Event) -> None:
-        self.queue = queue
-        self.event_newdata = event_newdata
-        self.event_ready = event_ready
+    def __init__(self, signals: Signaller) -> None:
+        self.signals = signals
 
     def emit(self, message: bytes, current=None) -> None:
         #script_api.consolePrint("Hello there!")
@@ -31,12 +78,12 @@ class DataListener(nice.datastream.NiceData):
         #print(record['command'])
         #print(f'DataListener: event_newdata {self.event_newdata.is_set()}')
         if record['command'] == 'Counts':
-            self.queue.put(record)
-            print(f'DataListener: setting event_newdata')
-            self.event_newdata.set()
-            self.event_ready.set()
+            self.signals.data_queue.put(record)
+            print(f'DataListener: setting new_data_acquired event')
+            self.signals.new_data_acquired.set()
         elif record['command'] == 'Open':
-            self.queue.put(record)
+            self.signals.trajectory_queue.put(record)
+            self.signals.new_trajectory_acquired.set()
         #elif record['command'] == 'End'
         #self.queue.put(record)
 
@@ -46,18 +93,16 @@ class NiceDataListener(NICEInteractor):
     Deprecated. Now part of MeasurementHandler
     """
 
-    def __init__(self, data_queue: Queue, event_newdata: Event, event_ready: Event, host=None, port=None, *args, **kwargs):
+    def __init__(self, signals: Signaller, host=None, port=None, *args, **kwargs):
         super().__init__(host=host, port=port, *args, **kwargs)
-        self.data_queue = data_queue
-        self.event_newdata = event_newdata
-        self.event_ready = event_ready
+        self.signals = signals
 
     def run(self):
         # Connect to NICE
         api = nice.connect(**self.nice_connection)
 
         # Subscribe to data stream. All activity is handled in the DataListener.emit callback
-        api.subscribe('data', DataListener(self.data_queue, self.event_newdata, self.event_ready))
+        api.subscribe('data', DataListener(self.signals))
 
         # wait until thread is terminated
         self._stop_event.wait()
@@ -70,10 +115,9 @@ class DataQueueListener(StoppableThread):
     Listens to data queue and gets the data
     """
 
-    def __init__(self, data_queue: Queue, event_newdata: Event, *args, **kwargs):
+    def __init__(self, signals: Signaller, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.data_queue = data_queue
-        self.event_newdata = event_newdata
+        self.signals = signals
         self.data = []
 
     def run(self):
@@ -82,33 +126,36 @@ class DataQueueListener(StoppableThread):
         while not self.stopped():
 
             # wait for new data to come in
-            self.event_newdata.wait()
+            self.signals.new_data_acquired.wait()
 
-            print(f'DataQueueListener: event_newdata triggered')
+            print(f'DataQueueListener: new_data_acquired triggered')
 
             # event will be triggered upon stop as well
             if not self.stopped():
-                # TODO: qsize is not reliable! Need to lock before getting?
-                # Could also use try, get_nowait, except
-                for _ in range(data_queue.qsize()):
-                    record = data_queue.get()
-                    self.data.append(record)
+                #with self.signals.data_queue.mutex:
+                for _ in range(self.signals.data_queue.qsize()):
+                    record = self.signals.data_queue.get()
+                    self.data.append(self._record_to_datapoint(record))
                     print(record)
-                
-                print(f'DataQueueListener: resetting event_newdata')
+            
+                print(f'DataQueueListener: resetting new_data_acquired')
 
                 # reset the event
-                self.event_newdata.clear()
+                self.signals.new_data_acquired.clear()
 
             else:
                 break
+
+    def _record_to_datapoint(self, record):
+        """Converts a NICE dictionary to a DataPoint object"""
+        return record
 
     def stop(self):
         super().stop()
 
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event
-        self.event_newdata.set()
+        self.signals.new_data_acquired.set()
 
 # define end states
 end_states = [
@@ -146,28 +193,30 @@ class MeasurementHandler(NICEInteractor):
     Threaded handler for measurement control
     """
 
-    def __init__(self, data_queue: Queue,
-                 measure_queue: Queue,
-                 event_ready: Event,
-                 event_meas_avail: Event,
+    def __init__(self, signals: Signaller,
                  datalistener: DataListener,
                  host=None, port=None,
                  *args, **kwargs) -> None:
         
         super().__init__(host=host, port=port, *args, **kwargs)
-        self.data_queue = data_queue
-        self.measure_queue = measure_queue
-        self.event_ready = event_ready
-        self.event_meas_avail = event_meas_avail
+        self.signals = signals
         self.counter = StoppableNiceCounter(None, None)
         self.datalistener = datalistener
 
     def _produce_random_point(self) -> None:
 
         # for testing only
+        pt = [{'movements': ['detectorAngle', str(np.random.uniform(0, 15))],
+             'count_time': np.random.uniform(0, 2) + 2,
+             'intent': 'specular',
+             'x': 1.0
+            }]
 
-        self.measure_queue.put(np.random.uniform(0, 15))
-        self.event_meas_avail.set()
+        print(f'Producing random point {pt}')
+
+        self.signals.measurement_queue.put(pt)
+        self.signals.measurement_queue_updated.set()
+        self.signals.measurement_queue_empty.clear()
 
     def run(self):
 
@@ -180,68 +229,93 @@ class MeasurementHandler(NICEInteractor):
         # subscribe data listener
         api.subscribe('data', self.datalistener)
 
+        # motor movements
+        motors_to_move = ['detectorAngle']
+        nmoves = 0
+
         # start trajectory
-        api.startTrajectory(1, ['detectorAngle'], 'test', 'entry', None, 'test_traj', True)
+        api.startTrajectory(1, motors_to_move, 'test', 'entry', None, 'test_traj', True)
 
         # TODO: start 3 scans for spec, bkgp, bkgm
         # TODO: can we implement a system to look at existing background data and calculate
         # uncertainties on all putative measurement points? If expected uncertainty in measured
         # data is less than the interpolated uncertainty in the background, then don't bother
         # measuring the background
-        api.startScan(1, ['detectorAngle'], 'test', 'entry', None, 'test_traj', True)
+        api.startScan(1, motors_to_move, 'test', 'entry', None, 'test_traj', True)
 
         # blocking: will wait until configuration comes through
-        scaninfo = self.data_queue.get()
+        self.signals.new_trajectory_acquired.wait()
+        scaninfo = self.signals.trajectory_queue.get()
 
         filename = scaninfo['data']['trajectoryData.fileName']
 
-        # run forever until thread is stopped
+        # wait for global start signal to come in
+        self.signals.global_start.wait()
+
+        print(f'MeasurementHandler: starting measurement loop')
+
+        #### Waits on measurement queue ####
         while not self.stopped():
 
-            # wait for ready signal to come in
-            self.event_ready.wait()
+            # TESTING ONLY: produce and queue up new measurement point
+            self._produce_random_point()
 
-            print(f'MeasurementHandler: event_ready triggered')
+            # blocks until new measurement is available, but can be interrupted
+            # using the meas_avail event
+            #with self.signals.measurement_queue.mutex:
+            #    if self.signals.measurement_queue.qsize() == 0:
+            #        self.signals.measurement_queue_empty.set()
+            
+            print(f'Measurement queue update? {self.signals.measurement_queue_updated.is_set()}')
+            self.signals.measurement_queue_updated.wait()
 
             # event will be triggered upon stop as well
             if not self.stopped():
-                # produce and queue up new measurement point
-                self._produce_random_point()
 
-                # blocks until new measurement is available, but can be interrupted
-                # using the meas_avail event
-                self.event_meas_avail.wait()
-                da = self.measure_queue.get()
-                meas_time = 2.1
+                print('Getting queue value:')
 
-                print(f'MeasurementHandler: moving to {da}')
+                # Get a single measurement list (may include spec, back+, back-)
+                meas_list = self.signals.measurement_queue.get()
 
-                # blocking
-                api.queue.wait_for(api.move(['detectorAngle', str(da)], False).UUID, end_states)
+                # For each point in the measurement list, measure
+                for pt in meas_list:
 
-                # check again for stoppage after blocking call
-                if not self.stopped():
+                    print(f'MeasurementHandler: measuring {pt}')
 
-                    print(f'MeasurementHandler: counting')
-                    self.counter = StoppableNiceCounter(api, (meas_time, -1, -1, ''))
+                    if not self.stopped():
 
-                    api.startCount(1, ['detectorAngle'], 'test', 'entry', filename, 'test_traj', True)
-                    #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
-                    self.counter.start()
-                    self.counter.join()
-                    self.counter.stop()
-                    api.endCount(1, ['detectorAngle'], 'test', 'entry', filename, 'test_traj')
+                        # blocking
+                        self.signals.current_instrument_x.get()
+                        self.signals.current_instrument_x.put(pt['x'])
+                        api.queue.wait_for(api.move(pt['movements'], False).UUID, end_states)
+                        nmoves += 1
 
-                    print(f'MeasurementHandler: resetting event_ready')
+                        # check again for stoppage after blocking call
+                        if not self.stopped():
 
-                    # reset the event
-                    self.event_ready.clear()
+                            print(f'MeasurementHandler: counting')
+                            self.counter = StoppableNiceCounter(api, (pt['count_time'], -1, -1, ''))
+
+                            api.startCount(1, motors_to_move, 'test', 'entry', filename, 'test_traj', True)
+                            #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
+                            self.counter.start()
+                            self.counter.join()
+                            self.counter.stop()
+                            api.endCount(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
+
+                        print(f'MeasurementHandler: resetting event_ready')
+                    
+                    else:
+                        break
+
+                # signal that first measurement is complete (clear this when queue is updated)
+                self.signals.first_measurement_complete.set()
 
             else:
                 break
 
-        api.endScan(1, ['detectorAngle'], 'test', 'entry', filename, 'test_traj')
-        api.endTrajectory(1, ['detectorAngle'], 'test', 'entry', filename, 'test_traj')
+        api.endScan(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
+        api.endTrajectory(1, motors_to_move, 'test', 'entry', filename, 'test_traj')
 
         # TODO: enable for production
         #api.unlock()
@@ -255,30 +329,29 @@ class MeasurementHandler(NICEInteractor):
 
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event. May have downstream effects if this event is ever used for something else
-        self.event_ready.set()
-        self.event_meas_avail.set()
+        self.signals.global_start.set()
+        self.signals.measurement_queue_updated.set()
+        self.signals.new_trajectory_acquired.set()
         self.counter.stop()
 
 
 if __name__ == '__main__':
 
-    data_queue = Queue()
-    event_newdata = Event()
-    event_ready = Event()
+    signaller = Signaller()
 
-    datalistener = DataListener(data_queue, event_newdata, event_ready)
+    datalistener = DataListener(signaller)
     #nicedata = NiceDataListener(data_queue=data_queue, event_newdata=event_newdata, event_ready=event_ready)
-    queuedata = DataQueueListener(data_queue, event_newdata)
+    queuedata = DataQueueListener(signaller)
 
-    measure_queue = Queue()
-    event_meas_avail = Event()
-    measuredata = MeasurementHandler(data_queue, measure_queue, event_ready, event_meas_avail, datalistener)
+    measuredata = MeasurementHandler(signaller, datalistener)
+
+    # TODO: make part of launcher thread
 
     try:
         #nicedata.start()
         queuedata.start()
         measuredata.start()
-        t = Timer(5, lambda: event_ready.set())
+        t = Timer(10, lambda: signaller.global_start.set())
         t.start()
         time.sleep(60)
         measuredata.stop()
