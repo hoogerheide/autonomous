@@ -343,7 +343,7 @@ class MAGIK(ReflectometerBase):
         movements = []
 
         # detector angle
-        detectorAngle = 2 * self.x2a(x)
+        detectorAngle = 2 * np.squeeze(self.x2a(x))
         movements.append(['detectorAngle', f'{detectorAngle:0.3f}'])
 
         # sample angle depends on intent
@@ -358,10 +358,10 @@ class MAGIK(ReflectometerBase):
 
         # slit values
         s1, s2, s3, s4 = self.get_slits(x, force_angle=sampleAngle)
-        movements.append(['slitAperture1', f'{s1:0.4f}'])
-        movements.append(['slitAperture2', f'{s2:0.4f}'])
-        movements.append(['slitAperture3', f'{s3:0.4f}'])
-        movements.append(['slitAperture4', f'{s4:0.4f}'])
+        movements.append(['slitAperture1', f'{s1[0]:0.4f}'])
+        movements.append(['slitAperture2', f'{s2[0]:0.4f}'])
+        movements.append(['slitAperture3', f'{s3[0]:0.4f}'])
+        movements.append(['slitAperture4', f'{s4[0]:0.4f}'])
 
         # return flattened list
         return [item for movelist in movements for item in movelist]
@@ -444,8 +444,8 @@ class CANDOR(ReflectometerBase):
 
         return totaltime * f / sum(f)
 
-    def get_slits(self, x):
-        s1, s2, s3, _ = super().get_slits(x)
+    def get_slits(self, x, force_angle=None):
+        s1, s2, s3, _ = super().get_slits(x, force_angle=force_angle)
 
         return s1, s2, s3, self.detector_mask
 
@@ -491,7 +491,7 @@ class CANDOR(ReflectometerBase):
         movements = []
 
         # detector angle
-        detectorAngle = 2.0 * self.x2a(x)
+        detectorAngle = 2.0 * np.squeeze(self.x2a(x))
         movements.append(['detectorArmAngle', f'{detectorAngle:0.4f}'])
 
         # sample angle depends on intent
@@ -506,9 +506,9 @@ class CANDOR(ReflectometerBase):
 
         # slit values
         s1, s2, s3, s4 = self.get_slits(x, force_angle=sampleAngle)
-        movements.append(['slitAperture1', f'{s1:0.4f}'])
-        movements.append(['slitAperture2', f'{s2:0.4f}'])
-        movements.append(['slitAperture3', f'{s3:0.4f}'])
+        movements.append(['slitAperture1', f'{s1[0]:0.4f}'])
+        movements.append(['slitAperture2', f'{s2[0]:0.4f}'])
+        movements.append(['slitAperture3', f'{s3[0]:0.4f}'])
 
         # return flattened list
         return [item for movelist in movements for item in movelist]
