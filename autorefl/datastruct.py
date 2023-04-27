@@ -69,6 +69,8 @@ class DataPoint(object):
 
             if isinstance(obj, np.ndarray) | isinstance(obj, list):
                 return ', '.join(format_obj(itm, fmt) for itm in obj)
+            elif obj is None:
+                return 'None'
             else:
                 return f'{obj:{fmt}}'
 
@@ -175,5 +177,5 @@ class MeasurementPoint(object):
     step_id: int
     point_id: int
     filename: str
-    template: DataPoint
+    base: DataPoint
     movements: List[str]
