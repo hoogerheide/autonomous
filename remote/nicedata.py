@@ -1,16 +1,18 @@
+from typing import List, Union, Dict
+
 import time
 from threading import Event, Timer, Condition
-from util import StoppableThread, NICEInteractor
+from remote.util import StoppableThread, NICEInteractor
 from queue import Queue
 
 # temp
 import numpy as np
 
-from datastruct import DataPoint, MeasurementPoint
+from autorefl.datastruct import DataPoint, MeasurementPoint, Intent, data_attributes
 
 # NICE import
 import sys
-from nicepath import nicepath
+from remote.nicepath import nicepath
 sys.path.append(nicepath)
 import nice.datastream
 import nice.core
@@ -123,7 +125,9 @@ class DataQueueListener(StoppableThread):
     def __init__(self, signals: Signaller, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.signals = signals
-        self.data = []
+
+        # data repository
+        self.data: Dict[int, List[DataPoint]] = {}
 
     def run(self):
 
@@ -137,11 +141,17 @@ class DataQueueListener(StoppableThread):
 
             # event will be triggered upon stop as well
             if not self.stopped():
-                basedatapoint = self.signals.current_measurement.get()
-                data = self.signals.data_queue.get()
-                self.data.append(self._record_to_datapoint(basedatapoint, data))
-                print(data)
-            
+                # get desired measurement data
+                basedata: MeasurementPoint = self.signals.current_measurement.get()
+
+                # get measurement data
+                data: dict = self.signals.data_queue.get()
+
+                # combine into new DataPoint object
+                datapoint: DataPoint = self._record_to_datapoint(basedata, data)
+
+                self._get_current_list(basedata.step_id).append(datapoint)
+
                 print(f'DataQueueListener: resetting new_data_acquired')
 
                 # reset the event
@@ -150,13 +160,25 @@ class DataQueueListener(StoppableThread):
             else:
                 break
 
-    def _record_to_datapoint(self, basedatapoint, data):
-        """Converts a NICE dictionary to a DataPoint object"""
-        #T = record['data']['detectorAngle'] / 2.0
+    def _get_current_list(self, step_id) -> list:
+
+        if step_id not in self.data.keys():
+            self.data[step_id] = []
         
-        print(f'Base data: {basedatapoint}\nNew data: {data}')
-        
-        return data
+        return self.data[step_id]
+
+    def _record_to_datapoint(self, basedatapoint: MeasurementPoint, data: dict):
+        """Converts a NICE counts dictionary to a DataPoint object"""
+
+        datapoint = basedatapoint.base
+        basedata = list(datapoint.data)
+
+        # TODO: counting device may be instrument-specific!
+        cts = np.array(data['data']['counter.liveROI'], ndmin=1)
+        basedata[data_attributes.index('N')] = cts
+        datapoint.data = basedata
+
+        return datapoint
 
     def stop(self):
         super().stop()
@@ -211,18 +233,28 @@ class MeasurementHandler(NICEInteractor):
         self.counter = StoppableNiceCounter(None, None)
         self.datalistener = datalistener
 
-    def _produce_random_point(self) -> None:
+    def _produce_random_point(self):
 
         # for testing only
-        pt = [{'movements': ['detectorAngle', str(np.random.uniform(0, 15))],
-             'count_time': np.random.uniform(0, 2) + 2,
-             'intent': 'specular',
-             'x': 1.0
-            }]
+
+        from autorefl.instrument import MAGIK
+
+        instr = MAGIK()
+
+        x = np.random.uniform(0.008, 0.25)
+        intent = Intent.spec
+
+        base = DataPoint(x, np.random.uniform(0, 2) + 2, 0,
+                         (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
+                          None, instr.intensity(x)[0]),
+                         intent=intent)
+        pt = MeasurementPoint(1, 2, 'test', base, instr.trajectoryData(x, intent))
+
+        points = [pt]
 
         print(f'Producing random point {pt}')
 
-        self.signals.measurement_queue.put(pt)
+        self.signals.measurement_queue.put(points)
         self.signals.measurement_queue_updated.set()
         self.signals.measurement_queue_empty.clear()
 
@@ -283,36 +315,42 @@ class MeasurementHandler(NICEInteractor):
                 print('Getting queue value:')
 
                 # Get a single measurement list (may include spec, back+, back-)
-                meas_list = self.signals.measurement_queue.get()
+                meas_list: List[MeasurementPoint] = self.signals.measurement_queue.get()
 
                 # For each point in the measurement list, measure
                 for pt in meas_list:
 
                     print(f'MeasurementHandler: measuring {pt}')
-                    self.signals.current_measurement.put(pt)
 
                     if not self.stopped():
 
-                        api.startCount(1, motors_to_move, 'test', pt['intent'], filename, 'test_traj', False)
+                        api.startCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj', False)
 
                         # blocking
                         self.signals.current_instrument_x.get()
-                        self.signals.current_instrument_x.put(pt['x'])
-                        api.queue.wait_for(api.move(pt['movements'], False).UUID, end_states)
+                        self.signals.current_instrument_x.put(pt.base.x)
+                        init_time = time.time()
+                        api.queue.wait_for(api.move(pt.movements, False).UUID, end_states)
+                        move_time = time.time() - init_time
                         nmoves += 1
+
+                        # add actual movement time
+                        pt.base.movet = move_time
+
+                        self.signals.current_measurement.put(pt)
 
                         # check again for stoppage after blocking call
                         if not self.stopped():
 
                             print(f'MeasurementHandler: counting')
-                            self.counter = StoppableNiceCounter(api, (pt['count_time'], -1, -1, ''))
+                            self.counter = StoppableNiceCounter(api, (pt.base.t, -1, -1, ''))
 
                             #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
                             self.counter.start()
                             self.counter.join()
                             self.counter.stop()
                         
-                        api.endCount(1, motors_to_move, 'test', pt['intent'], filename, 'test_traj')
+                        api.endCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj')
 
                         print(f'MeasurementHandler: resetting event_ready')
                     
@@ -347,6 +385,8 @@ class MeasurementHandler(NICEInteractor):
 
 
 if __name__ == '__main__':
+
+    # python -m remote.nicedata
 
     signaller = Signaller()
 
