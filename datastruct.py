@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple, Union, List
+from dataclasses import dataclass
 
 from reflred.intent import Intent
 from refl1d.resolution import TL2Q
@@ -10,6 +11,19 @@ data_tuple = Tuple[Union[np.ndarray, list], Union[np.ndarray, list],
                                    Union[np.ndarray, list], Union[np.ndarray, list]]
 
 data_attributes = ['T', 'dT', 'L', 'dL', 'N', 'Ninc']
+
+@dataclass
+class MeasurementPoint(object):
+    """
+    Container object for measurement point request
+    """
+
+    step_id: int
+    point_id: int
+    filename: str
+    x: float
+    movements: List[str]
+    count_time: float
 
 class DataPoint(object):
     """ Container object for a single data point.

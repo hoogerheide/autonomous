@@ -14,7 +14,7 @@ from scipy.interpolate import interp1d
 
 # local imports
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
-from datastruct import DataPoint, ExperimentStep, Intent
+from datastruct import DataPoint, ExperimentStep, Intent, MeasurementPoint
 from reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
 from inference import MPMapper, _MP_calc_qprofile, DreamFitPlus, default_fit_options
 from simulation import sim_data_N, calc_expected_R
@@ -272,7 +272,7 @@ class AutoReflBase(object):
 
         return qprofs
 
-    def fit_step(self, outfid=None) -> None:
+    def fit_step(self, abort_test=None, outfid=None) -> None:
         """Analyzes most recent step"""
         
         # Update models
@@ -296,7 +296,7 @@ class AutoReflBase(object):
         # Condition and run fit
         fitter = DreamFitPlus(self.problem)
         options=_fill_defaults(self.fit_options, fitter.settings)
-        result = fitter.solve(mapper=mapper, monitors=[monitor], initial_population=self.restart_pop, **options)
+        result = fitter.solve(mapper=mapper, monitors=[monitor], abort_test=None, initial_population=self.restart_pop, **options)
 
         # Save head state for initializing the next fit step
         _, chains, _ = fitter.state.chains()
@@ -365,34 +365,30 @@ class AutoReflBase(object):
         # TODO: current analysis code can't handle multiple foms, could pass all of them in here
         step.foms, step.meastimes, step.bkgmeastimes = foms[0], meastimes[0], bkgmeastimes[0]
 
-        self.request_data(newpoints, foms)
+        points = self.request_data(newpoints, foms)
 
-    def request_data(self, newpoints, foms) -> None:
+        self.add_step(points)
+
+    def request_data(self, newpoints, foms=None) -> List[DataPoint]:
         """
         Requests new data. In simulation mode, generates new data points. In experiment mode, should
         add new data points to a point queue to be measured
+
+        newpoints -- Required. New points to measure. List of items:
+                    modelnum: int. Model number of new point
+                    idx: int. Index of x value (self.x[modelnum])
+                    newx: float. x value (self.x[modelnum])
+                    new_meastime: float. Measurement time at new position
+                    new_bkgmeastime: float. Background measurement time at new position.
+                                            Typically 0 indicates to skip background measurement.
+        foms -- Optional (default: None). Figures of merit. Used only for populating new data points
+                    and plotting.
         """
         
         # Determine next measurement point(s).
         # Number of points to be used is determined from n_forecast (self.npoints)
 
-        points = []
-        for pt, fom in zip(newpoints, foms):
-            mnum, idx, newx, new_meastime, new_bkgmeastime = pt
-            newpoints = self._generate_new_point(mnum, newx, new_meastime, new_bkgmeastime, fom[mnum][idx])
-            newpoints[0].movet = self.instrument.movetime(newpoints[0].x)[0]
-            for newpoint in newpoints:
-                points.append(newpoint)
-                print('New data point:\t' + repr(newpoint))
-
-            # Once a new point is added, update the current model so model switching
-            # penalties can be reapplied correctly
-            self.curmodel = newpoint.model
-
-            # "move" instrument to new location for calculating the next movement penalty
-            self.instrument.x = newpoint.x
-        
-        self.add_step(points)
+        return []
 
     def add_step(self, points, use=True) -> None:
         """Adds a set of DataPoint objects as a new ExperimentStep
@@ -826,15 +822,11 @@ class AutoReflExperiment(AutoReflBase):
 
     Additional Inputs:
 
-    measurement_queue -- queue.Queue for holding the measurement queue. Required.
-    event_meas_avail -- threading.Event for signaling that new data have been added to the queue
     filename -- string representing the filename. Recommended to have a scheme to use a unique name.
 
     """
 
-    def __init__(self, measurement_queue: Queue,
-                       event_meas_avail: Event,
-                       filename: str,
+    def __init__(self, filename: str,
                        problem: FitProblem,
                        Q: Union[np.ndarray, List[np.ndarray]],
                        instrument: instrument.ReflectometerBase = instrument.MAGIK(),
@@ -855,8 +847,6 @@ class AutoReflExperiment(AutoReflBase):
                        meas_bkg, startmodel, min_meas_time, select_pars)
 
         self.filename = filename
-        self.measurement_queue = measurement_queue
-        self.event_meas_avail = event_meas_avail
 
     def get_data(self) -> List[Tuple[ReflData, Union[ReflData, None],
                                      Union[ReflData, None]]]:
@@ -869,33 +859,35 @@ class AutoReflExperiment(AutoReflBase):
         # TODO: make sure each entry is intensity normalized!
         return data
 
-    def request_data(self, newpoints, foms) -> None:
+    def request_data(self, newpoints, foms) -> List[List[dict]]:
         """
-        Requests new data. Add new data points to a measurement point queue to be measured
+        Requests new data. Creates data points to be added, e.g. to a measurement point queue.
+
+        Returns:
+        List of measurement point lists, each with 1 or 3 dictionaries containing specular or
+            specular + 2 background measurement points
         """
         
-        def create_msg(step_id: int, point_id: int, x: float, t: float, intent: Intent):
+        def create_msg(point_id: int, x: float, t: float, intent: Intent):
 
-            return {'step_ID': step_id,
-                    'point_ID': point_id,
-                    'filename': self.filename,
-                    'movements': self.instrument.trajectoryData(x, intent),
-                    'count_time': str(t)}
+            return MeasurementPoint(len(self.steps),
+                                    point_id=point_id,
+                                    x=x,
+                                    movements=self.instrument.trajectoryData(x, intent=intent),
+                                    count_time=t)
 
-        if self.event_meas_avail.is_set():
-            print('Warning: previous queue has not been read prior to update')
+        points = []
 
-        # Clear measurement queue in a thread-safe manner
-        with self.measurement_queue.mutex:
-            self.measurement_queue.queue.clear()
-
-        for pt in newpoints:
+        for i, pt in enumerate(newpoints):
+            ptlist = []
             _, _, newx, new_meastime, new_bkgmeastime = pt
 
-            self.measurement_queue.put(create_msg(newx, new_meastime, Intent.spec))
+            ptlist.append(create_msg(i, newx, new_meastime, Intent.spec))
 
             if new_bkgmeastime > 0:
-                self.measurement_queue.put(create_msg(newx, new_bkgmeastime / 2.0, Intent.backp))
-                self.measurement_queue.put(create_msg(newx, new_bkgmeastime / 2.0, Intent.backm))
+                ptlist.append(create_msg(i, newx, new_bkgmeastime / 2.0, Intent.backp))
+                ptlist.append(create_msg(i, newx, new_bkgmeastime / 2.0, Intent.backm))
 
-        self.event_meas_avail.set()
+            points.append(ptlist)
+
+        return points

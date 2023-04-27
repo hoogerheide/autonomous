@@ -74,7 +74,7 @@ class SimReflExperiment(AutoReflBase):
 
         return modeldata
 
-    def request_data(self, newpoints, foms) -> None:
+    def request_data(self, newpoints, foms) -> List[DataPoint]:
         """
         Requests new data. In simulation mode, generates new data points. In experiment mode, should
         add new data points to a point queue to be measured
@@ -99,7 +99,7 @@ class SimReflExperiment(AutoReflBase):
             # "move" instrument to new location for calculating the next movement penalty
             self.instrument.x = newpoint.x
         
-        self.add_step(points)
+        return points
 
     def _generate_new_point(self, mnum: int,
                                   newx: float,
@@ -208,6 +208,6 @@ class SimReflExperimentControl(SimReflExperiment):
                 pts[0].movet = self.instrument.movetime(x)[0]
                 for pt in pts:
                     points.append(pt)
-                self.instrument.x = x    
+                self.instrument.x = x
 
         self.add_step(points)
