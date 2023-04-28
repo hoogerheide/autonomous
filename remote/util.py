@@ -1,6 +1,11 @@
 
 from threading import Thread, Event
 
+import sys
+from remote.nicepath import nicepath
+sys.path.append(nicepath)
+import nice
+
 class StoppableThread(Thread):
     """
     Stoppable thread. From
@@ -33,3 +38,20 @@ class NICEInteractor(StoppableThread):
             self.nice_connection = {'host': host, 'port': port}
         else:
             self.nice_connection = {}
+
+    def connect(self, lock=False):
+
+        # create NICE connection
+        self.api = nice.connect(**self.nice_connection)
+
+        # TODO: Enable for production
+        if lock:
+            self.api.lock()
+            self.api_locked = True
+
+    def disconnect(self):
+
+        if self.api_locked:
+            self.api.unlock()
+        
+        self.api.close()

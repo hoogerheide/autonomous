@@ -14,6 +14,7 @@ from autorefl.datastruct import DataPoint, MeasurementPoint, Intent, data_attrib
 import sys
 from remote.nicepath import nicepath
 sys.path.append(nicepath)
+import nice
 import nice.datastream
 import nice.core
 import nice.writer
@@ -118,17 +119,17 @@ class NiceDataListener(NICEInteractor):
 
     def run(self):
         # Connect to NICE
-        api = nice.connect(**self.nice_connection)
+        self.connect()
 
         # Subscribe to data stream. All activity is handled in the DataListener.emit callback
-        api.subscribe('data', DataListener(self.signals))
+        self.api.subscribe('data', DataListener(self.signals))
 
         # wait until thread is terminated
         self._stop_event.wait()
 
-        # clean up
-        api.close()
-    
+        # Disconnect
+        self.disconnect()
+        
 class DataQueueListener(StoppableThread):
     """
     Listens to data queue and gets the data
@@ -262,27 +263,6 @@ class MeasurementHandler(NICEInteractor):
         self.filename = filename
         self._filename = filename
 
-    def connect(self, lock=False):
-
-        # create NICE connection
-        self.api = nice.connect(**self.nice_connection)
-
-        # TODO: Enable for production
-        if lock:
-            self.api.lock()
-            self.api_locked = True
-
-        # subscribe data listener
-        self.api.subscribe('data', self.datalistener)
-
-    def disconnect(self):
-
-        if self.api_locked:
-            self.api.unlock()
-        
-        self.api.close()
-
-
     def _produce_random_point(self):
 
         # for testing only
@@ -387,7 +367,11 @@ class MeasurementHandler(NICEInteractor):
 
     def run(self):
 
+        # connect NICE API
         self.connect()
+        
+        # subscribe data listener
+        self.api.subscribe('data', self.datalistener)
 
         # start trajectory
         self.api.startTrajectory(1, self.motors_to_move, None, None, self.filename, 'test_traj', True)
