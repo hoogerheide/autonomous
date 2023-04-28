@@ -63,17 +63,6 @@ class SimReflExperiment(AutoReflBase):
         # add residual background
         self.resid_bkg: np.ndarray = np.array([c.fitness.probe.background.value for c in self.calcmodels])
 
-    def get_data(self) -> List[Tuple[List[DataPoint], List[DataPoint], List[DataPoint]]]:
-
-        modeldata = list()
-        for i in range(self.nmodels):
-            specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
-            bkgpdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backp)]
-            bkgmdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.backm)]
-            modeldata.append((specdata, bkgpdata, bkgmdata))
-
-        return modeldata
-
     def request_data(self, newpoints, foms) -> List[DataPoint]:
         """
         Requests new data. In simulation mode, generates new data points. In experiment mode, should
