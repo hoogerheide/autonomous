@@ -6,7 +6,7 @@ import argparse
 import numpy as np
 
 from remote.util import StoppableThread
-from remote.nicedata import Signaller, DataQueueListener
+from remote.nicedata import Signaller
 
 from autorefl.autorefl import AutoReflExperiment
 
@@ -25,7 +25,7 @@ class AutoReflLauncher(StoppableThread):
         self.exp = exp
         self.signals = signals
         self.maxtime = maxtime
-        self.queuelistener = DataQueueListener(signals, daemon=True)
+        self.measurementhandler = MeasurementHandler(signaller, motors_to_move=exp.instrument.trajectoryMotors(), filename='test')
 
         fprefix = '%s_eta%0.2f_npoints%i' % (self.exp.instrument.name, exp.eta, exp.npoints)
         fsuffix = '' if cli_args['name'] is None else cli_args['name']
@@ -38,7 +38,7 @@ class AutoReflLauncher(StoppableThread):
     def run(self):
 
         # start queue listener
-        self.queuelistener.start()
+        self.measurementhandler.start()
 
         # wait for global start
         # TODO: set to a Barrier that all child threads need to cross.
@@ -48,7 +48,7 @@ class AutoReflLauncher(StoppableThread):
         # start measurement
         print('AutoLauncher: starting measurement')
         self.exp.add_initial_step()
-        self.queuelistener.data[0] = exp.steps[0].points
+        self.measurementhandler.data[0] = exp.steps[0].points
         self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
         points = self.exp.take_step(allow_repeat=False)
         total_t = 0.0
@@ -61,8 +61,8 @@ class AutoReflLauncher(StoppableThread):
 
             # Add empty step
             exp.add_step([])
-            if k not in self.queuelistener.data.keys():
-                self.queuelistener.data[k] = []
+            if k not in self.measurementhandler.data.keys():
+                self.measurementhandler.data[k] = []
 
             print('AutoLauncher: updating queue')
             # wait for measurement to become complete, then add new points
@@ -76,11 +76,9 @@ class AutoReflLauncher(StoppableThread):
             print('AutoLauncher: getting new data')
             # wait for new data to have been processed and added
             self.signals.first_measurement_complete.wait()
-            self.signals.new_data_processed.wait()
-            self.signals.new_data_processed.clear()
             
             # populate current step with new data
-            print(self.queuelistener.data)
+            print(self.measurementhandler.data)
             self._update_data()
 
             print('AutoLauncher: fitting data')
@@ -92,35 +90,34 @@ class AutoReflLauncher(StoppableThread):
             points = self.exp.take_step(allow_repeat=False)
 
             print('AutoLauncher: saving')
-            self.exp.save(self.pathname + '/autoexp%i.pickle')
+            self.exp.save(self.pathname + '/autoexp0.pickle')
 
-        self.queuelistener.stop()
+        self.measurementhandler.stop()
 
     def _update_data(self) -> None:
 
         for i, step in enumerate(self.exp.steps):
-            step.points = self.queuelistener.data[i]
+            step.points = self.measurementhandler.data[i]
 
     def stop(self):
+        print('AutoReflHandler: stopping')
         super().stop()
         time.sleep(1)
-        self.queuelistener.stop()
+        self.measurementhandler.stop()
 
 if __name__ == '__main__':
 
     # python -m autorefl_launch
     import time
 
-    from remote.nicedata import DataListener, MeasurementHandler
+    from remote.nicedata import MeasurementHandler
     from autorefl.instrument import MAGIK
     from bumps.cli import load_model
-    from threading import Timer
 
     instr = MAGIK()
 
     signaller = Signaller()
-    datalistener = DataListener(signaller)
-    measuredata = MeasurementHandler(signaller, datalistener, motors_to_move=instr.trajectoryMotors(), filename='test')
+    #measuredata = MeasurementHandler(signaller, motors_to_move=instr.trajectoryMotors(), filename='test')
 
     modelfile = 'example_model/ssblm_d2o.py'
     model = load_model(modelfile)
@@ -146,7 +143,7 @@ if __name__ == '__main__':
     measQ = (qmin-qstep) + np.cumsum(dq)
     #measQ = [m.fitness.probe.Q for m in model.models]
 
-    exp = AutoReflExperiment('test', model, measQ, instr, eta=0.5, npoints=3, select_pars=sel, fit_options={'burn': 50, 'steps': 10, 'pop': 2})
+    exp = AutoReflExperiment('test', model, measQ, instr, eta=0.5, npoints=6, select_pars=sel, fit_options={'burn': 50, 'steps': 10, 'pop': 2})
     exp.x = exp.measQ
 
     autolauncher = AutoReflLauncher(exp, signaller, 1000, cli_args={'name': 'testauto'})
@@ -156,7 +153,6 @@ if __name__ == '__main__':
     def sigint_handler(signal, frame):
         print('KeyboardInterrupt is caught')
         print('Caught KeyboardInterrupt')
-        measuredata.stop()
         autolauncher.stop()
         #queuedata.stop()
 
@@ -165,18 +161,15 @@ if __name__ == '__main__':
     print("launching")
     try:
         #nicedata.start()
-        measuredata.start()
         autolauncher.start()
         #t = Timer(10, lambda: signaller.global_start.set())
         #t.start()
-        time.sleep(600)
-        print(autolauncher.queuelistener.data)
-        measuredata.stop()
-        autolauncher.stop()
-        time.sleep(1)
+        #time.sleep(600)
+        #print(autolauncher.measurementhandler.data)
+        autolauncher.join()
+        #time.sleep(1)
     except KeyboardInterrupt:
         print('Caught KeyboardInterrupt')
-        measuredata.stop()
         autolauncher.stop()
     #for _ in range(data_queue.qsize()):
     #    print(data_queue.get())
