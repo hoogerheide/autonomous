@@ -8,7 +8,7 @@ from reflred.background import apply_background_subtraction, _ordinate
 from reflred.scale import apply_intensity_norm
 from reflred.refldata import ReflData, Sample, Detector, Monochromator, Monitor
 from dataflow.lib.uncertainty import Uncertainty as U, interp
-from datastruct import DataPoint, data_attributes
+from .datastruct import DataPoint, data_attributes
 
 def interpolate_background(Qbasis, backp: Union[ReflData, None] = None, backm: Union[ReflData, None] = None):
     

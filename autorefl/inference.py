@@ -1,6 +1,6 @@
 from bumps.mapper import MPMapper
 from bumps.fitters import DreamFit, _fill_defaults
-from simulation import calc_expected_R
+from .simulation import calc_expected_R
 
 default_fit_options = {'pop': 10, 'burn': 1000, 'steps': 500, 'init': 'lhs', 'alpha': 0.001}
 

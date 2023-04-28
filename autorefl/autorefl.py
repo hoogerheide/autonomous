@@ -14,11 +14,11 @@ from scipy.interpolate import interp1d
 
 # local imports
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
-from datastruct import DataPoint, ExperimentStep, Intent, MeasurementPoint
-from reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
-from inference import MPMapper, _MP_calc_qprofile, DreamFitPlus, default_fit_options
-from simulation import sim_data_N, calc_expected_R
-import instrument
+from .datastruct import DataPoint, ExperimentStep, Intent, MeasurementPoint
+from .reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
+from .inference import MPMapper, _MP_calc_qprofile, DreamFitPlus, default_fit_options
+from .simulation import sim_data_N, calc_expected_R
+from . import instrument
 
 class AutoReflBase(object):
     """
@@ -126,6 +126,8 @@ class AutoReflBase(object):
         else:
             self.meas_bkg: np.ndarray = np.array(meas_bkg)
 
+        self.resid_bkg: np.ndarray = np.full_like(self.meas_bkg, 1e-12)
+
         # these are not used
         self.newmodels = [m.fitness for m in models]
         self.par_scale: np.ndarray = np.diff(problem.bounds(), axis=0)
@@ -145,8 +147,8 @@ class AutoReflBase(object):
 # calculate initial MVN entropy in the problem
         self.entropy_options = {**default_entropy_options, **entropy_options}
         self.thinning = int(self.fit_options['steps']*0.8)
-        self.init_entropy, _, _ = calc_init_entropy(problem, pop=fit_options['pop'] * fit_options['steps'] / self.thinning, options=entropy_options)
-        self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=fit_options['pop'] * fit_options['steps'] / self.thinning, options=entropy_options)
+        self.init_entropy, _, _ = calc_init_entropy(problem, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
+        self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
 
     def get_all_points(self, modelnum: Union[int, None]) -> List[DataPoint]:
         # returns all data points associated with model with index modelnum
@@ -157,7 +159,7 @@ class AutoReflBase(object):
         """
         Gets all data and returns specular, background+, background- as ReflData objects
         """
-        
+
         modeldata = list()
         for i, mQ in enumerate(self.measQ):
             specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
@@ -243,7 +245,7 @@ class AutoReflBase(object):
         for m, measQ, (specdata, bkgpdata, bkgmdata) in zip(self.models, self.measQ, modeldata):
             # run reduction
             # TODO: instrument-specific reduction
-            spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
+            spec = reduce(specdata, bkgpdata, bkgmdata)
 
             mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
                             spec.detector.wavelength, spec.detector.wavelength_resolution,  \
@@ -370,7 +372,7 @@ class AutoReflBase(object):
 
         points = self.request_data(newpoints, foms)
 
-        self.add_step(points)
+        return points
 
     def request_data(self, newpoints, foms=None) -> List[DataPoint]:
         """
@@ -520,11 +522,11 @@ class AutoReflBase(object):
             # calculate the existing background uncertainty. This is used to determine if additional
             # background measurements must be performed
             specdata, bkgpdata, bkgmdata = mdata
-            spec = DataPoint2ReflData(Qth, specdata)
-            bkgp = DataPoint2ReflData(Qth, bkgpdata)
-            bkgm = DataPoint2ReflData(Qth, bkgmdata)
+            #spec = DataPoint2ReflData(Qth, specdata)
+            #bkgp = DataPoint2ReflData(Qth, bkgpdata)
+            #bkgm = DataPoint2ReflData(Qth, bkgmdata)
             
-            bkg, bkgvar = interpolate_background(Qth, bkgp, bkgm)
+            bkg, bkgvar = interpolate_background(Qth, bkgpdata, bkgmdata)
 
             # if real measurement backgrounds are available, use them
             qbkg = bkg if bkg is not None else np.full_like(Qth, qbkg_default)
@@ -562,7 +564,7 @@ class AutoReflBase(object):
             # interpolate the background. Should also have shape XD
             #interp_refl_bkg = interp1d(Qth, qbkg, fill_value=(qbkg[0], qbkg[-1]), bounds_error=False)
             #xqbkg = np.array(interp_refl_bkg(q))
-            xqbkg, xdbkg2 = interpolate_background(q, bkgp, bkgm)
+            xqbkg, xdbkg2 = interpolate_background(q, bkgpdata, bkgmdata)
             xqbkg = xqbkg if xqbkg is not None else np.full_like(q, qbkg_default)
             xdbkg2 = xdbkg2 if xdbkg2 is not None else np.full_like(q, 1.0)
 
@@ -854,13 +856,13 @@ class AutoReflExperiment(AutoReflBase):
     def get_data(self) -> List[Tuple[ReflData, Union[ReflData, None],
                                      Union[ReflData, None]]]:
 
-        data = self.instrument.load_data(self.filename)
+        #data = self.instrument.load_data(self.filename)
 
         #for dataset in data:
         #    pass
 
         # TODO: make sure each entry is intensity normalized!
-        return data
+        return super().get_data()
 
     def request_data(self, newpoints, foms) -> List[List[MeasurementPoint]]:
         """
