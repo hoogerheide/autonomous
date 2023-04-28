@@ -141,36 +141,42 @@ class DataQueueListener(StoppableThread):
         # data repository
         self.data: Dict[int, List[DataPoint]] = {}
 
+    @blocking
+    def _handle_data(self):
+        """
+        Handler for incoming data. Requires that signals.current_measurement and
+            signals.data_queue have items in them to get.
+        """
+
+        # get desired measurement data
+        basedata: MeasurementPoint = self.signals.current_measurement.get()
+
+        # get measurement data
+        data: dict = self.signals.data_queue.get()
+
+        print(data)
+
+        # combine into new DataPoint object
+        datapoint: DataPoint = self._record_to_datapoint(basedata, data)
+
+        self._get_current_list(basedata.step_id).append(datapoint)
+
     def run(self):
 
         # run forever until thread is stopped
         while not self.stopped():
 
             # wait for new data to come in
+            # TODO: if multiple listeners required, a Condition would work better
             self.signals.new_data_acquired.wait()
 
             print(f'DataQueueListener: new_data_acquired triggered')
 
-            # event will be triggered upon stop as well
-            if not self.stopped():
-                # get desired measurement data
-                basedata: MeasurementPoint = self.signals.current_measurement.get()
+            self._handle_data()
 
-                # get measurement data
-                data: dict = self.signals.data_queue.get()
-
-                # combine into new DataPoint object
-                datapoint: DataPoint = self._record_to_datapoint(basedata, data)
-
-                self._get_current_list(basedata.step_id).append(datapoint)
-
-                print(f'DataQueueListener: resetting new_data_acquired')
-
-                # reset the event
-                self.signals.new_data_acquired.clear()
-
-            else:
-                break
+            # reset the event
+            self.signals.new_data_acquired.clear()
+            print(f'DataQueueListener: resetting new_data_acquired')
 
     def _get_current_list(self, step_id) -> list:
 
