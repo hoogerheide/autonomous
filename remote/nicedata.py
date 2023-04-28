@@ -52,6 +52,9 @@ class Signaller:
         # Signals that a new data point has been acquired
         self.new_data_acquired = Event()
 
+        # Signals that a new data point has been acquired
+        self.new_data_processed = Event()
+
         # Signals that a new trajectory definition has been acquired
         self.new_trajectory_acquired = Event()
 
@@ -100,6 +103,7 @@ class DataListener(nice.datastream.NiceData):
         if record['command'] == 'Counts':
             self.signals.data_queue.put(record)
             print(f'DataListener: setting new_data_acquired event')
+            print(record)
             self.signals.new_data_acquired.set()
         elif record['command'] == 'Open':
             self.signals.trajectory_queue.put(record)
@@ -177,6 +181,7 @@ class DataQueueListener(StoppableThread):
 
             # reset the event
             self.signals.new_data_acquired.clear()
+            self.signals.new_data_processed.set()
             print(f'DataQueueListener: resetting new_data_acquired')
 
     def _get_current_list(self, step_id) -> list:
@@ -259,7 +264,7 @@ class MeasurementHandler(NICEInteractor):
         self.api = None
         self.api_locked = False
 
-        self.motors_to_move = motors_to_move
+        self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
         self.filename = filename
         self._filename = filename
 
@@ -278,13 +283,13 @@ class MeasurementHandler(NICEInteractor):
                          (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
                           None, instr.intensity(x)[0]),
                          intent=intent)
-        pt = MeasurementPoint(1, 1, 'test', base, instr.trajectoryData(x, intent))
+        pt = MeasurementPoint(1, 1, base, instr.trajectoryData(x, intent))
 
         base = DataPoint(x, np.random.uniform(0, 2) + 2, 0,
                          (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
                           None, instr.intensity(x)[0]),
                          intent=intent)
-        pt2 = MeasurementPoint(1, 2, 'test', base, instr.trajectoryData(x, intent))
+        pt2 = MeasurementPoint(1, 2, base, instr.trajectoryData(x, intent))
 
         points = [[pt], [pt2]]
 
@@ -314,21 +319,25 @@ class MeasurementHandler(NICEInteractor):
             if not self.stopped() & (not self.signals.measurement_queue_updated.is_set()):
 
                 # measure all points in point list
-                for pt in point_list:
-
+                for ptnum, pt in enumerate(point_list):
+                    
+                    print(f'MeasurementHandler: measuring point {ptnum} of {len(point_list)}, step ID {pt.step_id}')
                     self._move_count(pt)
+
+                if ptlistnum == 0:
+                    # signal that first point list is complete, but only after the first set
+                    # this allows the listener to clear the signal
+                    self.signals.first_measurement_complete.set()
 
             else:
                 break
-
-        # signal that first measurement is complete (clear this when queue is updated)
-        self.signals.first_measurement_complete.set()
 
     @blocking
     def _move_count(self, pt: MeasurementPoint) -> None:
 
         # must start the count before the move, otherwise motors are not returned
-        self.api.startCount(1, self.motors_to_move, 'test', pt.base.intent, self.filename, 'test_traj', False)
+        #self.api.startScan(1, self.motors_to_move, None, pt.base.intent, self._filename, 'test_traj', False)
+        self.api.startCount(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj', False)
 
         # update current instrument position (for figure of merit calculation)
         try:
@@ -349,7 +358,8 @@ class MeasurementHandler(NICEInteractor):
         # blocking count call
         self._count(pt)
         
-        self.api.endCount(1, self.motors_to_move, 'test', pt.base.intent, self.filename, 'test_traj')
+        self.api.endCount(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj')
+        #self.api.endScan(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj')
 
     @blocking
     def _count(self, pt: MeasurementPoint) -> None:
@@ -358,12 +368,15 @@ class MeasurementHandler(NICEInteractor):
         self.signals.current_measurement.put(pt)
 
         print(f'MeasurementHandler: counting')
-        self.counter = StoppableNiceCounter(self.api, (pt.base.t, -1, -1, ''))
+        jitter = np.random.uniform(-0.1, 0.1)
+        self.counter = StoppableNiceCounter(self.api, (pt.base.t + jitter, -1, -1, ''))
 
         #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
         self.counter.start()
         self.counter.join()
         self.counter.stop()
+
+        #self.api.read()
 
     def run(self):
 
@@ -389,6 +402,9 @@ class MeasurementHandler(NICEInteractor):
 
         self._filename = scaninfo['data']['trajectoryData.fileName']
 
+        self.api.startScan(1, self.motors_to_move, None, Intent.backp, self._filename, 'test_traj', False)
+        self.api.startScan(1, self.motors_to_move, None, Intent.backm, self._filename, 'test_traj', False)
+
         # wait for global start signal to come in
         self.signals.global_start.wait()
 
@@ -398,7 +414,7 @@ class MeasurementHandler(NICEInteractor):
         while not self.stopped():
 
             # TESTING ONLY: produce and queue up new measurement point
-            self._produce_random_point()
+            #self._produce_random_point()
 
             # TODO: figure out if use of qsize is okay or if mutex lock required
             #with self.signals.measurement_queue.mutex:
@@ -411,7 +427,9 @@ class MeasurementHandler(NICEInteractor):
 
             self._measure_queue()
             
-        self.api.endScan(1, self.motors_to_move, 'test', 'specular', self._filename, 'test_traj')
+        self.api.endScan(1, self.motors_to_move, 'test', Intent.spec, self._filename, 'test_traj')
+        self.api.endScan(1, self.motors_to_move, 'test', Intent.backp, self._filename, 'test_traj')
+        self.api.endScan(1, self.motors_to_move, 'test', Intent.backm, self._filename, 'test_traj')
         self.api.endTrajectory(1, self.motors_to_move, 'test', None, self._filename, 'test_traj')
 
         self.disconnect()
