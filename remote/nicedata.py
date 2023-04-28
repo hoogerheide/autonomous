@@ -18,6 +18,18 @@ import nice.datastream
 import nice.core
 import nice.writer
 
+def blocking(func):
+    """
+    Decorator for blocking functions that only executes the function if the class is not stopped
+    """
+    def check(self: StoppableThread, *args, **kwargs):
+        if self.stopped():
+            return
+        else:
+            return func(self, *args, **kwargs)
+
+    return check
+
 class Signaller:
     """
     Container class for all required events, conditions, and queues
@@ -178,6 +190,9 @@ class DataQueueListener(StoppableThread):
         basedata[data_attributes.index('N')] = cts
         datapoint.data = basedata
 
+        # Shouldn't be necessary as interrupted counts will be ignored
+        datapoint.t = data['data']['counter.liveTime']
+
         return datapoint
 
     def stop(self):
@@ -225,6 +240,8 @@ class MeasurementHandler(NICEInteractor):
 
     def __init__(self, signals: Signaller,
                  datalistener: DataListener,
+                 motors_to_move: List[str],
+                 filename: str,
                  host=None, port=None,
                  *args, **kwargs) -> None:
         
@@ -232,6 +249,33 @@ class MeasurementHandler(NICEInteractor):
         self.signals = signals
         self.counter = StoppableNiceCounter(None, None)
         self.datalistener = datalistener
+        self.api = None
+        self.api_locked = False
+
+        self.motors_to_move = motors_to_move
+        self.filename = filename
+        self._filename = filename
+
+    def connect(self, lock=False):
+
+        # create NICE connection
+        self.api = nice.connect(**self.nice_connection)
+
+        # TODO: Enable for production
+        if lock:
+            self.api.lock()
+            self.api_locked = True
+
+        # subscribe data listener
+        self.api.subscribe('data', self.datalistener)
+
+    def disconnect(self):
+
+        if self.api_locked:
+            self.api.unlock()
+        
+        self.api.close()
+
 
     def _produce_random_point(self):
 
@@ -264,41 +308,101 @@ class MeasurementHandler(NICEInteractor):
         self.signals.measurement_queue_updated.set()
         self.signals.measurement_queue_empty.clear()
 
+    @blocking
+    def _measure_queue(self) -> None:
+
+        print('Getting queue value:')
+
+        # Get the entire list of possible measurements
+        complete_list: List[List[MeasurementPoint]] = self.signals.measurement_queue.get()
+
+        # Reset queue update signal; will now run point_lists in complete_list until
+        # the measurement queue is updated again
+        self.signals.measurement_queue_updated.clear()
+
+        # For each list of points (may include spec, or spec + backp + backm)
+        for ptlistnum, point_list in enumerate(complete_list):
+
+            print(f'MeasurementHandler: measuring point list {ptlistnum + 1} of {len(complete_list)}')
+
+            if not self.stopped() & (not self.signals.measurement_queue_updated.is_set()):
+
+                # measure all points in point list
+                for pt in point_list:
+
+                    self._move_count(pt)
+
+            else:
+                break
+
+        # signal that first measurement is complete (clear this when queue is updated)
+        self.signals.first_measurement_complete.set()
+
+    @blocking
+    def _move_count(self, pt: MeasurementPoint) -> None:
+
+        # must start the count before the move, otherwise motors are not returned
+        self.api.startCount(1, self.motors_to_move, 'test', pt.base.intent, self.filename, 'test_traj', False)
+
+        # update current instrument position (for figure of merit calculation)
+        try:
+            self.signals.current_instrument_x.get_nowait()
+        except Empty:
+            print('Warning: current instrument position not defined. Setting anyway.')
+        finally:
+            self.signals.current_instrument_x.put(pt.base.x)
+
+        # blocking
+        init_time = time.time()
+        self.api.queue.wait_for(self.api.move(pt.movements, False).UUID, end_states)
+        move_time = time.time() - init_time
+
+        # add actual movement time
+        pt.base.movet = move_time
+
+        # blocking count call
+        self._count(pt)
+        
+        self.api.endCount(1, self.motors_to_move, 'test', pt.base.intent, self.filename, 'test_traj')
+
+    @blocking
+    def _count(self, pt: MeasurementPoint) -> None:
+
+        # TODO: max queue size 1, this is put_nowait and check for pileup on queue
+        self.signals.current_measurement.put(pt)
+
+        print(f'MeasurementHandler: counting')
+        self.counter = StoppableNiceCounter(self.api, (pt.base.t, -1, -1, ''))
+
+        #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
+        self.counter.start()
+        self.counter.join()
+        self.counter.stop()
+
     def run(self):
 
-        # create NICE connection
-        api = nice.connect(**self.nice_connection)
-
-        # TODO: Enable for production
-        #api.lock()
-
-        # subscribe data listener
-        api.subscribe('data', self.datalistener)
-
-        # motor movements
-        motors_to_move = ['detectorAngle']
-        nmoves = 0
+        self.connect()
 
         # start trajectory
-        api.startTrajectory(1, motors_to_move, 'test', None, None, 'test_traj', True)
+        self.api.startTrajectory(1, self.motors_to_move, None, None, self.filename, 'test_traj', True)
 
         # TODO: start 3 scans for spec, bkgp, bkgm
         # TODO: can we implement a system to look at existing background data and calculate
         # uncertainties on all putative measurement points? If expected uncertainty in measured
         # data is less than the interpolated uncertainty in the background, then don't bother
         # measuring the background
-        api.startScan(1, motors_to_move, 'test', Intent.spec, None, 'test_traj', False)
+        self.api.startScan(1, self.motors_to_move, None, Intent.spec, self.filename, 'test_traj', False)
 
         # blocking: will wait until configuration comes through
         self.signals.new_trajectory_acquired.wait()
         scaninfo = self.signals.trajectory_queue.get()
 
-        filename = scaninfo['data']['trajectoryData.fileName']
+        self._filename = scaninfo['data']['trajectoryData.fileName']
 
         # wait for global start signal to come in
         self.signals.global_start.wait()
 
-        print(f'MeasurementHandler: starting measurement loop')
+        print(f'MeasurementHandler: starting measurement loop with filename {self._filename}')
 
         #### Waits on measurement queue ####
         while not self.stopped():
@@ -315,84 +419,12 @@ class MeasurementHandler(NICEInteractor):
             # blocking call
             self.signals.measurement_queue_updated.wait()
 
-            # event will be triggered upon stop as well
-            if not self.stopped():
+            self._measure_queue()
+            
+        self.api.endScan(1, self.motors_to_move, 'test', 'specular', self._filename, 'test_traj')
+        self.api.endTrajectory(1, self.motors_to_move, 'test', None, self._filename, 'test_traj')
 
-                print('Getting queue value:')
-
-                # Get the entire list of possible measurements
-                complete_list: List[List[MeasurementPoint]] = self.signals.measurement_queue.get()
-
-                # Reset queue update signal; will now run point_lists in complete_list until
-                # the measurement queue is updated again
-                self.signals.measurement_queue_updated.clear()
-
-                # For each list of points (may include spec, or spec + backp + backm)
-                for ptlistnum, point_list in enumerate(complete_list):
-
-                    print(f'MeasurementHandler: measuring point list {ptlistnum + 1} of {len(complete_list)}')
-
-                    if not self.stopped() & (not self.signals.measurement_queue_updated.is_set()):
-
-                        # measure all points in point list
-                        for pt in point_list:
-
-                            if not self.stopped():
-                                # must start the count before the move, otherwise motors are not returned
-                                api.startCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj', False)
-
-                                # update current instrument position (for figure of merit calculation)
-                                try:
-                                    self.signals.current_instrument_x.get_nowait()
-                                except Empty:
-                                    print('Warning: current instrument position not defined. Setting anyway.')
-                                finally:
-                                    self.signals.current_instrument_x.put(pt.base.x)
-
-                                # blocking
-                                init_time = time.time()
-                                api.queue.wait_for(api.move(pt.movements, False).UUID, end_states)
-                                move_time = time.time() - init_time
-                                nmoves += 1
-
-                                # add actual movement time
-                                pt.base.movet = move_time
-
-                                # check again for stoppage after blocking call
-                                if not self.stopped():
-
-                                    # TODO: max queue size 1, this is put_nowait and check for pileup on queue
-                                    self.signals.current_measurement.put(pt)
-
-                                    print(f'MeasurementHandler: counting')
-                                    self.counter = StoppableNiceCounter(api, (pt.base.t, -1, -1, ''))
-
-                                    #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
-                                    self.counter.start()
-                                    self.counter.join()
-                                    self.counter.stop()
-                                
-                                api.endCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj')
-
-                            else:
-                                break
-                    else:
-                        break
-
-                # signal that first measurement is complete (clear this when queue is updated)
-                self.signals.first_measurement_complete.set()
-
-            else:
-                break
-
-        api.endScan(1, motors_to_move, 'test', 'specular', filename, 'test_traj')
-        api.endTrajectory(1, motors_to_move, 'test', None, filename, 'test_traj')
-
-        # TODO: enable for production
-        #api.unlock()
-
-        # clean up: note that this does NOT unlock the NICE queue
-        api.close()
+        self.disconnect()
 
     def stop(self):
         print('MeasurementHandler: stopping')
@@ -410,33 +442,48 @@ if __name__ == '__main__':
 
     # python -m remote.nicedata
 
+    from autorefl.instrument import MAGIK
+    import signal
+
+    instr = MAGIK()
+
     signaller = Signaller()
 
     datalistener = DataListener(signaller)
     #nicedata = NiceDataListener(data_queue=data_queue, event_newdata=event_newdata, event_ready=event_ready)
     queuedata = DataQueueListener(signaller)
 
-    measuredata = MeasurementHandler(signaller, datalistener)
+    measuredata = MeasurementHandler(signaller, datalistener, motors_to_move=instr.trajectoryMotors(), filename='test')
 
     # TODO: make part of launcher thread
 
-    try:
-        #nicedata.start()
-        queuedata.start()
-        measuredata.start()
-        t = Timer(10, lambda: signaller.global_start.set())
-        t.start()
-        time.sleep(60)
+    def sigint_handler(signal, frame):
+        print('KeyboardInterrupt is caught')
+        print('Caught KeyboardInterrupt')
         measuredata.stop()
         time.sleep(1)
-        #nicedata.stop()
         queuedata.stop()
 
-        print(queuedata.data)
-    except KeyboardInterrupt:
+    signal.signal(signal.SIGINT, sigint_handler)
+
+    print("launching")
+    #nicedata.start()
+    queuedata.start()
+    measuredata.start()
+    t = Timer(10, lambda: signaller.global_start.set())
+    t.start()
+    time.sleep(60)
+    measuredata.stop()
+    time.sleep(1)
+    #nicedata.stop()
+    queuedata.stop()
+
+    print(queuedata.data)
+#    except KeyboardInterrupt:
         #nicedata.stop()
-        measuredata.stop()
-        time.sleep(1)
-        queuedata.stop()
+#        print('Caught KeyboardInterrupt')
+#        measuredata.stop()
+#        time.sleep(1)
+#        queuedata.stop()
     #for _ in range(data_queue.qsize()):
     #    print(data_queue.get())
