@@ -3,7 +3,7 @@ from typing import List, Union, Dict
 import time
 from threading import Event, Timer, Condition
 from remote.util import StoppableThread, NICEInteractor
-from queue import Queue
+from queue import Queue, Empty, Full
 
 # temp
 import numpy as np
@@ -54,7 +54,7 @@ class Signaller:
         ### Queues
 
         # Current instrument position (initialized to None)
-        self.current_instrument_x = Queue()
+        self.current_instrument_x = Queue(maxsize=1)
         self.current_instrument_x.put(None)
 
         # Measurement point queue (frequently flushed and updated after each analysis step)
@@ -248,11 +248,17 @@ class MeasurementHandler(NICEInteractor):
                          (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
                           None, instr.intensity(x)[0]),
                          intent=intent)
-        pt = MeasurementPoint(1, 2, 'test', base, instr.trajectoryData(x, intent))
+        pt = MeasurementPoint(1, 1, 'test', base, instr.trajectoryData(x, intent))
 
-        points = [pt]
+        base = DataPoint(x, np.random.uniform(0, 2) + 2, 0,
+                         (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
+                          None, instr.intensity(x)[0]),
+                         intent=intent)
+        pt2 = MeasurementPoint(1, 2, 'test', base, instr.trajectoryData(x, intent))
 
-        print(f'Producing random point {pt}')
+        points = [[pt], [pt2]]
+
+        print(f'Producing random point list {pt}')
 
         self.signals.measurement_queue.put(points)
         self.signals.measurement_queue_updated.set()
@@ -281,7 +287,7 @@ class MeasurementHandler(NICEInteractor):
         # uncertainties on all putative measurement points? If expected uncertainty in measured
         # data is less than the interpolated uncertainty in the background, then don't bother
         # measuring the background
-        api.startScan(1, motors_to_move, 'test', 'specular', None, 'test_traj', False)
+        api.startScan(1, motors_to_move, 'test', Intent.spec, None, 'test_traj', False)
 
         # blocking: will wait until configuration comes through
         self.signals.new_trajectory_acquired.wait()
@@ -300,13 +306,13 @@ class MeasurementHandler(NICEInteractor):
             # TESTING ONLY: produce and queue up new measurement point
             self._produce_random_point()
 
-            # blocks until new measurement is available, but can be interrupted
-            # using the meas_avail event
+            # TODO: figure out if use of qsize is okay or if mutex lock required
             #with self.signals.measurement_queue.mutex:
-            #    if self.signals.measurement_queue.qsize() == 0:
-            #        self.signals.measurement_queue_empty.set()
+            if self.signals.measurement_queue.qsize() == 0:
+                # send signal that queue is empty
+                self.signals.measurement_queue_empty.set()
             
-            print(f'Measurement queue update? {self.signals.measurement_queue_updated.is_set()}')
+            # blocking call
             self.signals.measurement_queue_updated.wait()
 
             # event will be triggered upon stop as well
@@ -314,46 +320,62 @@ class MeasurementHandler(NICEInteractor):
 
                 print('Getting queue value:')
 
-                # Get a single measurement list (may include spec, back+, back-)
-                meas_list: List[MeasurementPoint] = self.signals.measurement_queue.get()
+                # Get the entire list of possible measurements
+                complete_list: List[List[MeasurementPoint]] = self.signals.measurement_queue.get()
 
-                # For each point in the measurement list, measure
-                for pt in meas_list:
+                # Reset queue update signal; will now run point_lists in complete_list until
+                # the measurement queue is updated again
+                self.signals.measurement_queue_updated.clear()
 
-                    print(f'MeasurementHandler: measuring {pt}')
+                # For each list of points (may include spec, or spec + backp + backm)
+                for ptlistnum, point_list in enumerate(complete_list):
 
-                    if not self.stopped():
+                    print(f'MeasurementHandler: measuring point list {ptlistnum + 1} of {len(complete_list)}')
 
-                        api.startCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj', False)
+                    if not self.stopped() & (not self.signals.measurement_queue_updated.is_set()):
 
-                        # blocking
-                        self.signals.current_instrument_x.get()
-                        self.signals.current_instrument_x.put(pt.base.x)
-                        init_time = time.time()
-                        api.queue.wait_for(api.move(pt.movements, False).UUID, end_states)
-                        move_time = time.time() - init_time
-                        nmoves += 1
+                        # measure all points in point list
+                        for pt in point_list:
 
-                        # add actual movement time
-                        pt.base.movet = move_time
+                            if not self.stopped():
+                                # must start the count before the move, otherwise motors are not returned
+                                api.startCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj', False)
 
-                        self.signals.current_measurement.put(pt)
+                                # update current instrument position (for figure of merit calculation)
+                                try:
+                                    self.signals.current_instrument_x.get_nowait()
+                                except Empty:
+                                    print('Warning: current instrument position not defined. Setting anyway.')
+                                finally:
+                                    self.signals.current_instrument_x.put(pt.base.x)
 
-                        # check again for stoppage after blocking call
-                        if not self.stopped():
+                                # blocking
+                                init_time = time.time()
+                                api.queue.wait_for(api.move(pt.movements, False).UUID, end_states)
+                                move_time = time.time() - init_time
+                                nmoves += 1
 
-                            print(f'MeasurementHandler: counting')
-                            self.counter = StoppableNiceCounter(api, (pt.base.t, -1, -1, ''))
+                                # add actual movement time
+                                pt.base.movet = move_time
 
-                            #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
-                            self.counter.start()
-                            self.counter.join()
-                            self.counter.stop()
-                        
-                        api.endCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj')
+                                # check again for stoppage after blocking call
+                                if not self.stopped():
 
-                        print(f'MeasurementHandler: resetting event_ready')
-                    
+                                    # TODO: max queue size 1, this is put_nowait and check for pileup on queue
+                                    self.signals.current_measurement.put(pt)
+
+                                    print(f'MeasurementHandler: counting')
+                                    self.counter = StoppableNiceCounter(api, (pt.base.t, -1, -1, ''))
+
+                                    #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
+                                    self.counter.start()
+                                    self.counter.join()
+                                    self.counter.stop()
+                                
+                                api.endCount(1, motors_to_move, 'test', pt.base.intent, filename, 'test_traj')
+
+                            else:
+                                break
                     else:
                         break
 

@@ -154,7 +154,10 @@ class AutoReflBase(object):
 
     def get_data(self) -> List[Tuple[ReflData, Union[ReflData, None],
                                      Union[ReflData, None]]]:
-
+        """
+        Gets all data and returns specular, background+, background- as ReflData objects
+        """
+        
         modeldata = list()
         for i, mQ in enumerate(self.measQ):
             specdata = [pt for step in self.steps for pt in step.points if (pt.model == i) & (pt.intent == Intent.spec)]
@@ -859,7 +862,7 @@ class AutoReflExperiment(AutoReflBase):
         # TODO: make sure each entry is intensity normalized!
         return data
 
-    def request_data(self, newpoints, foms) -> List[List[dict]]:
+    def request_data(self, newpoints, foms) -> List[List[MeasurementPoint]]:
         """
         Requests new data. Creates data points to be added, e.g. to a measurement point queue.
 
@@ -868,25 +871,36 @@ class AutoReflExperiment(AutoReflBase):
             specular + 2 background measurement points
         """
         
-        def create_msg(point_id: int, x: float, t: float, intent: Intent):
+        step_id = len(self.steps)
 
-            return MeasurementPoint(len(self.steps),
+        def create_msg(point_id: int, model_num: int, x: float, t: float, intent: Intent, merit:float):
+
+            return MeasurementPoint(step_id,
                                     point_id=point_id,
-                                    x=x,
-                                    movements=self.instrument.trajectoryData(x, intent=intent),
-                                    count_time=t)
+                                    base=DataPoint(x, t, model_num,
+                                                    (self.instrument.T(x)[0],
+                                                        self.instrument.dT(x)[0],
+                                                        self.instrument.L(x)[0],
+                                                        self.instrument.dL(x)[0],
+                                                        None,
+                                                        self.instrument.intensity(x)[0]),
+                                                    intent=intent),
+                                    movements=self.instrument.trajectoryData(x, intent=intent))
+
+            # NOTE: DataPoint.T may be different from actual T for backgorunds;
+            # this is the reference T for specular data
 
         points = []
 
-        for i, pt in enumerate(newpoints):
+        for i, (pt, fom) in enumerate(zip(newpoints, foms)):
             ptlist = []
-            _, _, newx, new_meastime, new_bkgmeastime = pt
+            mnum, idx, newx, new_meastime, new_bkgmeastime = pt
 
-            ptlist.append(create_msg(i, newx, new_meastime, Intent.spec))
+            ptlist.append(create_msg(i, mnum, newx, new_meastime, Intent.spec, fom[mnum][idx]))
 
             if new_bkgmeastime > 0:
-                ptlist.append(create_msg(i, newx, new_bkgmeastime / 2.0, Intent.backp))
-                ptlist.append(create_msg(i, newx, new_bkgmeastime / 2.0, Intent.backm))
+                ptlist.append(create_msg(i, mnum, newx, new_bkgmeastime / 2.0, Intent.backp, fom[mnum][idx]))
+                ptlist.append(create_msg(i, mnum, newx, new_bkgmeastime / 2.0, Intent.backm, fom[mnum][idx]))
 
             points.append(ptlist)
 
