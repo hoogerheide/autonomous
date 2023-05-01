@@ -7,9 +7,23 @@ from queue import Empty
 import numpy as np
 
 from remote.util import StoppableThread
-from remote.nicedata import Signaller
+from remote.nicedata import Signaller, blocking
 
 from autorefl.autorefl import AutoReflExperiment
+
+class KeyboardInput(StoppableThread):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def run(self):
+        while not self.stopped():
+            cmd = input()
+
+            if cmd == 'stop':
+                break
+            else:
+                print(f'{cmd} not recognized')
 
 class AutoReflLauncher(StoppableThread):
     """
@@ -50,7 +64,7 @@ class AutoReflLauncher(StoppableThread):
         print('AutoLauncher: starting measurement')
         self.exp.add_initial_step()
         self.measurementhandler.data[0] = exp.steps[0].points
-        self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
+        self.exp.fit_step(abort_test=lambda: self.stopped())
         points = self.exp.take_step(allow_repeat=False)
         total_t = 0.0
         k = 0
@@ -73,36 +87,41 @@ class AutoReflLauncher(StoppableThread):
             self.signals.measurement_queue_empty.clear()
             
             # need to wait for measurements to be acquired
+            self._update_data()     # blocking, can be slow
 
-            print('AutoLauncher: getting new data')
-            # wait for new data to have been processed and added
-            self.signals.first_measurement_complete.wait()
-            
-            # populate current step with new data
-            print(self.measurementhandler.data)
-            self._update_data()
+            # 
+            if not self.stopped():
+                print('AutoLauncher: fitting data')
+                # fit the step. Blocks, but exits on stop or if measurement becomes idle
+                self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
 
-            print('AutoLauncher: fitting data')
-            # fit the step. Blocks, but exits on stop or if measurement becomes idle
-            self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
+                if not self.stopped():
+                    print('AutoLauncher: calculating FOM')
+                    # update instrument position
+                    try:
+                        self.exp.instrument.x = self.signals.current_instrument_x.get_nowait()
+                    except Empty:
+                        # current position hasn't changed
+                        pass
 
-            print('AutoLauncher: calculating FOM')
-            # update instrument position
-            try:
-                self.exp.instrument.x = self.signals.current_instrument_x.get_nowait()
-            except Empty:
-                # current position hasn't changed
-                pass
-
-            # calculate figure of merit and identify points for next step
-            points = self.exp.take_step(allow_repeat=False)
+                    # calculate figure of merit and identify points for next step
+                    # blocking but usually not slow so not decorated here
+                    points = self.exp.take_step(allow_repeat=False)
 
             print('AutoLauncher: saving')
             self.exp.save(self.pathname + '/autoexp0.pickle')
 
-        self.measurementhandler.stop()
+        # also signals measurementhandler to stop
+        self.stop()
 
+    @blocking
     def _update_data(self) -> None:
+        print('AutoLauncher: getting new data')
+        # wait for new data to have been processed and added
+        self.signals.first_measurement_complete.wait()
+        
+        # populate current step with new data
+        #print(self.measurementhandler.data)
 
         for i, step in enumerate(self.exp.steps):
             step.points = self.measurementhandler.data[i]
@@ -110,7 +129,8 @@ class AutoReflLauncher(StoppableThread):
     def stop(self):
         print('AutoReflHandler: stopping')
         super().stop()
-        time.sleep(1)
+
+        # terminates count, which will update data
         self.measurementhandler.stop()
 
 if __name__ == '__main__':
@@ -155,29 +175,13 @@ if __name__ == '__main__':
     exp.x = exp.measQ
 
     autolauncher = AutoReflLauncher(exp, signaller, 1000, cli_args={'name': 'testauto'})
-
-    # TODO: make part of launcher thread
-
-    def sigint_handler(signal, frame):
-        print('KeyboardInterrupt is caught')
-        print('Caught KeyboardInterrupt')
-        autolauncher.stop()
-        #queuedata.stop()
-
-    #signal.signal(signal.SIGINT, sigint_handler)
+    kinput = KeyboardInput()
 
     print("launching")
-    try:
-        #nicedata.start()
-        autolauncher.start()
-        #t = Timer(10, lambda: signaller.global_start.set())
-        #t.start()
-        #time.sleep(600)
-        #print(autolauncher.measurementhandler.data)
-        autolauncher.join()
-        #time.sleep(1)
-    except KeyboardInterrupt:
-        print('Caught KeyboardInterrupt')
-        autolauncher.stop()
-    #for _ in range(data_queue.qsize()):
-    #    print(data_queue.get())
+    autolauncher.start()
+    kinput.start()
+    kinput.join()
+    # wait for stop signal from keyboard (just type "stop")
+    print('stop signal issued via keyboard')
+    autolauncher.stop()
+    autolauncher.join()

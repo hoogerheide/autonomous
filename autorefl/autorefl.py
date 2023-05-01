@@ -301,32 +301,33 @@ class AutoReflBase(object):
         # Condition and run fit
         fitter = DreamFitPlus(self.problem)
         options=_fill_defaults(self.fit_options, fitter.settings)
-        result = fitter.solve(mapper=mapper, monitors=[monitor], abort_test=None, initial_population=self.restart_pop, **options)
+        result = fitter.solve(mapper=mapper, monitors=[monitor], abort_test=abort_test, initial_population=self.restart_pop, **options)
 
-        # Save head state for initializing the next fit step
-        _, chains, _ = fitter.state.chains()
-        self.restart_pop = chains[-1, : ,:]
+        if not abort_test():
+            # Save head state for initializing the next fit step
+            _, chains, _ = fitter.state.chains()
+            self.restart_pop = chains[-1, : ,:]
 
-        # Analyze the fit state and save values
-        fitter.state.keep_best()
-        fitter.state.mark_outliers()
+            # Analyze the fit state and save values
+            fitter.state.keep_best()
+            fitter.state.mark_outliers()
 
-        step = self.steps[-1]
-        step.chain_pop = chains[-1, :, :]
-        step.draw = fitter.state.draw(thin=self.thinning)
-        step.best_logp = fitter.state.best()[1]
-        self.problem.setp(fitter.state.best()[0])
-        step.final_chisq = self.problem.chisq_str()
-        step.H, _, _ = calc_entropy(step.draw.points, select_pars=None, options=self.entropy_options)
-        step.dH = self.init_entropy - step.H
-        step.H_marg, _, _ = calc_entropy(step.draw.points, select_pars=self.sel, options=self.entropy_options)
-        step.dH_marg = self.init_entropy_marg - step.H_marg
+            step = self.steps[-1]
+            step.chain_pop = chains[-1, :, :]
+            step.draw = fitter.state.draw(thin=self.thinning)
+            step.best_logp = fitter.state.best()[1]
+            self.problem.setp(fitter.state.best()[0])
+            step.final_chisq = self.problem.chisq_str()
+            step.H, _, _ = calc_entropy(step.draw.points, select_pars=None, options=self.entropy_options)
+            step.dH = self.init_entropy - step.H
+            step.H_marg, _, _ = calc_entropy(step.draw.points, select_pars=self.sel, options=self.entropy_options)
+            step.dH_marg = self.init_entropy_marg - step.H_marg
 
-        # Calculate the Q profiles associated with posterior distribution
-        print('Calculating %i Q profiles:' % (step.draw.points.shape[0]))
-        init_time = time.time()
-        step.qprofs = self.calc_qprofiles(step.draw.points)
-        print('Calculation time: %f' % (time.time() - init_time))
+            # Calculate the Q profiles associated with posterior distribution
+            print('Calculating %i Q profiles:' % (step.draw.points.shape[0]))
+            init_time = time.time()
+            step.qprofs = self.calc_qprofiles(step.draw.points)
+            print('Calculation time: %f' % (time.time() - init_time))
 
         # Terminate the multiprocessing pool (required to avoid memory issues
         # if run is stopped after current fit step)

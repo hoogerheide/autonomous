@@ -347,7 +347,7 @@ class MeasurementHandler(NICEInteractor):
 
         # must start the count before the move, otherwise motors are not returned
         #self.api.startScan(1, self.motors_to_move, None, pt.base.intent, self._filename, 'test_traj', False)
-        self.api.startCount(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj', False)
+        self.api.startCount(1, self.motors_to_move, self._filename, pt.base.intent, self._filename, 'test_traj', False)
 
         # update current instrument position (for figure of merit calculation)
         try:
@@ -369,7 +369,7 @@ class MeasurementHandler(NICEInteractor):
         # blocking count call
         self._count(pt)
         
-        self.api.endCount(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj')
+        self.api.endCount(1, self.motors_to_move, self._filename, pt.base.intent, self._filename, 'test_traj')
         #self.api.endScan(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj')
 
     @blocking
@@ -414,14 +414,8 @@ class MeasurementHandler(NICEInteractor):
         self.connect()
         
         # start trajectory
-        self.api.startTrajectory(1, self.motors_to_move, None, None, self.filename, 'test_traj', True)
-
-        # TODO: start 3 scans for spec, bkgp, bkgm
-        # TODO: can we implement a system to look at existing background data and calculate
-        # uncertainties on all putative measurement points? If expected uncertainty in measured
-        # data is less than the interpolated uncertainty in the background, then don't bother
-        # measuring the background
-        self.api.startScan(1, self.motors_to_move, None, Intent.spec, self.filename, 'test_traj', False)
+        self.api.startTrajectory(1, self.motors_to_move, self.filename, None, self.filename, 'test_traj', False)
+        self.api.startScan(1, self.motors_to_move, self.filename, Intent.spec, self.filename, 'test_traj', False)
 
         # blocking: will wait until configuration comes through
         #self.signals.new_trajectory_acquired.wait()
@@ -429,8 +423,8 @@ class MeasurementHandler(NICEInteractor):
 
         self._filename = self.filename #scaninfo['data']['trajectoryData.fileName']
 
-        self.api.startScan(1, self.motors_to_move, None, Intent.backp, self._filename, 'test_traj', False)
-        self.api.startScan(1, self.motors_to_move, None, Intent.backm, self._filename, 'test_traj', False)
+        self.api.startScan(1, self.motors_to_move, self.filename, Intent.backp, self._filename, 'test_traj', False)
+        self.api.startScan(1, self.motors_to_move, self.filename, Intent.backm, self._filename, 'test_traj', False)
 
         # wait for global start signal to come in
         self.signals.global_start.wait()
@@ -469,7 +463,7 @@ class MeasurementHandler(NICEInteractor):
         # more than one event. May have downstream effects if this event is ever used for something else
         self.signals.global_start.set()
         self.signals.measurement_queue_updated.set()
-        self.signals.new_trajectory_acquired.set()
+        self.signals.first_measurement_complete.set()
         self.counter.stop()
 
 
