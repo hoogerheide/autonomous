@@ -353,7 +353,8 @@ class MeasurementHandler(NICEInteractor):
         try:
             self.signals.current_instrument_x.get_nowait()
         except Empty:
-            print('Warning: current instrument position not defined. Setting anyway.')
+            # current position not defined
+            pass
         finally:
             self.signals.current_instrument_x.put(pt.base.x)
 

@@ -2,6 +2,7 @@ import datetime
 import copy
 import os
 import argparse
+from queue import Empty
 
 import numpy as np
 
@@ -86,6 +87,13 @@ class AutoReflLauncher(StoppableThread):
             self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
 
             print('AutoLauncher: calculating FOM')
+            # update instrument position
+            try:
+                self.exp.instrument.x = self.signals.current_instrument_x.get_nowait()
+            except Empty:
+                # current position hasn't changed
+                pass
+
             # calculate figure of merit and identify points for next step
             points = self.exp.take_step(allow_repeat=False)
 
