@@ -139,10 +139,10 @@ if __name__ == '__main__':
     import time
 
     from remote.nicedata import MeasurementHandler
-    from autorefl.instrument import MAGIK
+    from autorefl.instrument import MAGIK, CANDOR
     from bumps.cli import load_model
 
-    instr = MAGIK()
+    instr = CANDOR()
 
     signaller = Signaller()
     #measuredata = MeasurementHandler(signaller, motors_to_move=instr.trajectoryMotors(), filename='test')
@@ -172,7 +172,23 @@ if __name__ == '__main__':
     #measQ = [m.fitness.probe.Q for m in model.models]
 
     exp = AutoReflExperiment('test', model, measQ, instr, eta=0.5, npoints=6, select_pars=sel, fit_options={'burn': 50, 'steps': 10, 'pop': 2})
-    exp.x = exp.measQ
+    if instr.name == 'MAGIK':
+        exp.x = exp.measQ
+    elif instr.name == 'CANDOR':
+        for i, measQ in enumerate(exp.measQ):
+            x = list()
+            overlap = 0.90
+            xrng = exp.instrument.qrange2xrange([min(measQ), max(measQ)])
+            x.append(xrng[0])
+            while x[-1] < xrng[1]:
+                curq = exp.instrument.x2q(x[-1])
+                curminq, curmaxq = np.min(curq), np.max(curq)
+                newrng = exp.instrument.qrange2xrange([curminq + (curmaxq - curminq) * (1 - overlap), max(measQ)])
+                x.append(newrng[0])
+            x[-1] = xrng[1]
+            x = np.array(x)
+            exp.x[i] = x
+
 
     autolauncher = AutoReflLauncher(exp, signaller, 1000, cli_args={'name': 'testauto'})
     kinput = KeyboardInput()
