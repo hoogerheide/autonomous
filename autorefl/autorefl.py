@@ -880,6 +880,7 @@ class AutoReflExperiment(AutoReflBase):
 
             return MeasurementPoint(step_id,
                                     point_id=point_id,
+                                    bank=self.instrument.bank,
                                     base=DataPoint(x, t, model_num,
                                                     (self.instrument.T(x)[0],
                                                         self.instrument.dT(x)[0],

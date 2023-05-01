@@ -176,5 +176,6 @@ class MeasurementPoint(object):
 
     step_id: int
     point_id: int
+    bank: int
     base: DataPoint
     movements: List[str]

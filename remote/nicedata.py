@@ -387,6 +387,13 @@ class MeasurementHandler(NICEInteractor):
         print(f'MeasurementHandler: reading count value from {detectorName}')
         counts = self.api.readValue(f'{detectorName}.counts')
         counts = [int(ct) for ct in counts]
+
+        # select subset of counts corresponding to desired detector bank (only for multiDetector)
+        if pt.bank is not None:
+            strides = self.api.readValue(f'{detectorName}.strides')
+            small_stride = int(strides[0])
+            counts = counts[int(pt.bank)::(small_stride + 1)]
+            
         livetime = float(self.api.readValue('counter.liveTime'))
 
         self._handle_data(pt, counts, livetime)

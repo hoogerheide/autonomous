@@ -15,7 +15,7 @@ def a2q(T, L):
     return 4*np.pi/L * np.sin(np.radians(T))
 
 class ReflectometerBase(object):
-    def __init__(self) -> None:
+    def __init__(self, bank=None) -> None:
         self._L = None
         self._dL = None
         self.xlabel = ''
@@ -47,6 +47,10 @@ class ReflectometerBase(object):
         # Loader-specific parameters
         self._data_loader = None
         self._data_type = None
+
+        # Support for multidimensional detectors
+        # None if a point detector
+        self.bank = bank
 
     def x2q(self, x):
         pass
@@ -243,8 +247,8 @@ class ReflectometerBase(object):
 class MAGIK(ReflectometerBase):
     """ MAGIK Reflectometer
     x = Q """
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, bank=None) -> None:
+        super().__init__(bank=bank)
         self._L = np.array([5.0])
         self._dL = 0.01648374 * self._L / 2.355
         self.xlabel = r'$Q_z$ (' + u'\u212b' + r'$^{-1}$)'
@@ -371,7 +375,7 @@ class CANDOR(ReflectometerBase):
     """ CANDOR Reflectometer with a single bank
     x = T """
     def __init__(self, bank=0) -> None:
-        super().__init__()
+        super().__init__(bank=bank)
         
         self.name = 'CANDOR'
         self.xlabel = r'$\Theta$ $(\degree)$'
