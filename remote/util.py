@@ -48,6 +48,8 @@ class NICEInteractor(StoppableThread):
         if lock:
             self.api.lock()
             self.api_locked = True
+        else:
+            self.api_locked = False
 
     def disconnect(self):
 
