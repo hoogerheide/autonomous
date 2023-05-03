@@ -171,14 +171,12 @@ class AutoReflBase(object):
 
         return modeldata
 
-    def add_initial_step(self, dRoR=10.0) -> None:
-        """ Generate initial data set. This is only necessary because of the requirement that
-            dof > 0 in Refl1D (not strictly required for DREAM fit)
-            
-            Inputs:
-            dRoR -- target uncertainty relative to the average of the reflectivity, default 10.0;
-                    determines the "measurement time" for the initial data set. This should be
-                    > 3 so as not to constrain the parameters before collecting any real data.
+    def initial_points(self) -> None:
+        """
+        Generate initial  measurement points based on figure of merit calculated without data.
+
+        Returns:
+        points -- list of data points
         """
 
         # evenly spread the Q points over the models in the problem
@@ -204,38 +202,13 @@ class AutoReflBase(object):
         MPMapper.stop_mapper(mapper)
         MPMapper.pool = None
 
-        points = []
+        initstep = ExperimentStep([])
+        initstep.draw_pts = initpts
+        initstep.qprofs = init_qprof
 
-        # simulate data based on the q profiles. The uncertainty in the parameters is estimated
-        # from the dRoR paramter
-        for mnum, (newQ, qprof, meas_bkg, resid_bkg) in enumerate(zip(newQs, init_qprof, self.meas_bkg, self.resid_bkg)):
-            # calculate target mean and uncertainty from unconstrained profiles
-            newR, newdR = np.mean(qprof, axis=0), dRoR * np.std(qprof, axis=0)
+        points = self.take_step(initstep)
 
-            # calculate target number of measured neutrons to give the correct uncertainty with
-            # Poisson statistics
-            targetN = (newR / newdR) ** 2
-
-            # calculate the target number of incident neutrons to give the target reflectivity
-            target_incident_neutrons = targetN / newR
-
-            # simulate the data
-            Ns, Nbkgs, Nincs = sim_data_N(newR, target_incident_neutrons, resid_bkg=resid_bkg, meas_bkg=meas_bkg)
-
-            # Calculate T, dT, L, dL. Note that because these data don't constrain the model at all,
-            # these values are brought in from MAGIK (not instrument-specific) because they don't need
-            # to be.
-            Ts = instrument.q2a(newQ, 5.0)
-            # Resolution function doesn't matter here at all because these points don't have any effect
-            dTs = np.polyval(np.array([ 2.30358547e-01, -1.18046955e-05]), newQ)
-            Ls = np.ones_like(newQ)*5.0
-            dLs = np.ones_like(newQ)*0.01648374 * 5.0
-
-            # Append the data points with zero measurement time
-            points.append(DataPoint(0.0, 0.0, mnum, (Ts, dTs, Ls, dLs, Ns, Nincs), Intent.spec))
-
-        # Add the step with the new points
-        self.add_step(points, use=False)
+        return points
 
     def update_models(self) -> None:
         # Update the models in the fit problem with new data points. Should be run every time
@@ -314,19 +287,21 @@ class AutoReflBase(object):
 
             step = self.steps[-1]
             step.chain_pop = chains[-1, :, :]
-            step.draw = fitter.state.draw(thin=self.thinning)
+            draw = fitter.state.draw(thin=self.thinning)
+            step.draw_pts = draw.points
+            step.draw_logp = draw.logp
             step.best_logp = fitter.state.best()[1]
             self.problem.setp(fitter.state.best()[0])
             step.final_chisq = self.problem.chisq_str()
-            step.H, _, _ = calc_entropy(step.draw.points, select_pars=None, options=self.entropy_options)
+            step.H, _, _ = calc_entropy(step.draw_pts, select_pars=None, options=self.entropy_options)
             step.dH = self.init_entropy - step.H
-            step.H_marg, _, _ = calc_entropy(step.draw.points, select_pars=self.sel, options=self.entropy_options)
+            step.H_marg, _, _ = calc_entropy(step.draw_pts, select_pars=self.sel, options=self.entropy_options)
             step.dH_marg = self.init_entropy_marg - step.H_marg
 
             # Calculate the Q profiles associated with posterior distribution
-            print('Calculating %i Q profiles:' % (step.draw.points.shape[0]))
+            print('Calculating %i Q profiles:' % (step.draw_pts.shape[0]))
             init_time = time.time()
-            step.qprofs = self.calc_qprofiles(step.draw.points)
+            step.qprofs = self.calc_qprofiles(step.draw_pts)
             print('Calculation time: %f' % (time.time() - init_time))
 
         # Terminate the multiprocessing pool (required to avoid memory issues
@@ -334,7 +309,7 @@ class AutoReflBase(object):
         MPMapper.stop_mapper(mapper)
         MPMapper.pool = None
 
-    def take_step(self, allow_repeat=True) -> None:
+    def take_step(self, step=None, allow_repeat=True) -> None:
         """Analyze the last fitted step and add the next one
         
         Procedure:
@@ -346,18 +321,20 @@ class AutoReflBase(object):
             4. Add a new step for fitting.
 
         Inputs:
+            step -- step to use for FOM calculation. Optional, default None. If None, uses the last
+                    step in self.steps
             allow_repeat -- toggles whether to allow measurement at the same point over and over;
                             default True. (Can cause issues if MCMC fit isn't converged in
                             high-gradient areas, e.g. around the critical edge)
         """
 
         # Focus on the last step
-        step = self.steps[-1]
+        step = self.steps[-1] if step is None else step
         
         # Calculate figures of merit and proposed measurement times with forecasting
         print('Calculating figures of merit:')
         init_time = time.time()
-        pts = step.draw.points[:, self.sel]
+        pts = step.draw_pts[:, self.sel]
 
         # can scale parameters for entropy calculations. Helps with GMM.
         # TODO: check that this works. Does it need to be implemented in entropy.calc_entropy?
@@ -796,9 +773,6 @@ class AutoReflBase(object):
 
     def save(self, fn) -> None:
         """Save a pickled version of the experiment"""
-
-        for step in self.steps[:-2]:
-            step.draw.state = None
 
         with open(fn, 'wb') as f:
             dill.dump(self, f, recurse=True)
