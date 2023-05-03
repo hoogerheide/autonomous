@@ -480,7 +480,10 @@ class AutoReflBase(object):
             M -- number of samples after selecting those inside the confidence interval
             P -- number of marginalized parameters"""
 
-        import matplotlib.pyplot as plt
+        show_plots = False
+
+        if show_plots:
+            import matplotlib.pyplot as plt
 
         # Cycle through models, with model-specific x, Q, calculated q profiles, and measurement background level
         # Populate q vectors, interpolated q profiles (slow), and intensities
@@ -517,7 +520,7 @@ class AutoReflBase(object):
             # 1.0 so they will always be measured.
             dbkg = np.sqrt(bkgvar) if bkgvar is not None else np.full_like(Qth, 1.0)
 
-            if False:
+            if show_plots:
                 print(qprof.shape, qbkg.shape)
                 if spec is not None:
                     plt.errorbar(spec.Qz, spec.v, spec.dv, fmt='.', capsize=4)
@@ -631,7 +634,7 @@ class AutoReflBase(object):
                 # Compare uncertainty in background to expected uncertainty in reflectivity
                 t_0 = 1.0 / (incident_neutrons * xqbkg * (xdbkg / xqbkg) ** 2)
                 t_bkg = 1.0 / (incident_neutrons * xqbkg * (meas_sigma / xqbkg) ** 2)
-                if False:
+                if show_plots:
                     plt.plot(t_0)
                     plt.plot(t_bkg)
                     plt.yscale('log')
