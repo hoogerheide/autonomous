@@ -36,7 +36,7 @@ def load_entropy(steps: List[ExperimentStep], control: bool = False) -> Tuple[np
 def get_parameter_variance(steps: List[ExperimentStep], control: bool = False) -> Tuple[np.ndarray, np.ndarray]:
 
     allt = get_steps_time(steps, control)
-    allvars = np.array([np.var(step.draw.points, axis=0) for step in steps]).T
+    allvars = np.array([np.var(step.draw_pts, axis=0) for step in steps]).T
 
     return allt, allvars
 
@@ -217,7 +217,7 @@ def snapshot(exp: SimReflExperiment,
     axtops = [fig.add_subplot(gsleft[0, i]) for i in range(exp.nmodels)]
     axbots = [fig.add_subplot(gsleft[1, i]) for i in range(exp.nmodels)]
 
-    #print(np.array(step.qprofs).shape, step.draw.logp.shape)
+    #print(np.array(step.qprofs).shape, step.draw_logp.shape)
     foms = step.foms if step.foms is not None else [np.full_like(np.array(x), np.nan) for x in exp.x]
     qprofs = step.qprofs if step.qprofs is not None else [np.full_like(np.array(measQ), np.nan) for measQ in exp.measQ]
 
@@ -233,7 +233,7 @@ def snapshot(exp: SimReflExperiment,
         red_spec = reduce(measQ, specdata, bkgpdata, bkgmdata)
         #print(*[[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list])
         #idata = [[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list]
-        plot_qprofiles(copy.copy(measQ), qprof, step.draw.logp, data=red_spec, ax=axtop, power=power)
+        plot_qprofiles(copy.copy(measQ), qprof, step.draw_logp, data=red_spec, ax=axtop, power=power)
         axtop.set_title(f'meas t = {steptimes[i]:0.0f} s\nmove t = {movetimes[i]:0.0f} s', fontsize='larger')
         axbot.plot(x, fom, linewidth=3, color='C0')
         if (j + 1) < len(exp.steps):

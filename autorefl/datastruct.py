@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from reflred.intent import Intent
 from refl1d.resolution import TL2Q
-from bumps.dream.state import MCMCDraw
 
 data_tuple = Tuple[Union[np.ndarray, list], Union[np.ndarray, list],
                                    Union[np.ndarray, list], Union[np.ndarray, list],
@@ -145,7 +144,8 @@ class ExperimentStep(object):
         self.qbkgs: Union[List[np.ndarray], None] = None
         self.best_logp: Union[float, None] = None
         self.final_chisq: Union[str, None] = None
-        self.draw: Union[MCMCDraw, None] = None
+        self.draw_pts: Union[np.ndarray, None] = None
+        self.draw_logp: Union[np.ndarray, None] = None
         self.chain_pop: Union[np.ndarray, None] = None
         self.use: bool = use
 
