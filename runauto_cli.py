@@ -90,9 +90,9 @@ import copy
 import os
 from bumps.cli import load_model
 import matplotlib.pyplot as plt
-from simexp import SimReflExperiment, SimReflExperimentControl
-from analysis import makemovie
-import instrument
+from autorefl.simexp import SimReflExperiment, SimReflExperimentControl
+from autorefl.analysis import makemovie
+import autorefl.instrument as instrument
 import argparse
 
 plt.rcParams['lines.linewidth'] = 1.5
@@ -205,15 +205,17 @@ if __name__ == '__main__':
                         x = np.array(x)
                         exp.x[i] = x
 
-                exp.add_initial_step()
+                points = exp.initial_points()
                 total_t = 0.0
                 k = 0
                 while total_t < args.maxtime:
+                    # Add empty step
+                    exp.add_step(points)
                     total_t += exp.steps[-1].meastime() + exp.steps[-1].movetime()
                     print('Rep: %i, Step: %i, Total time so far: %0.1f' % (kk, k, total_t))
                     exp.fit_step()
                     #exp.instrument.x = None # to turn off movement penalty
-                    exp.take_step(allow_repeat=False)
+                    points = exp.take_step(allow_repeat=False)
                     exp.save(pathname + '/exp%i.pickle' % kk)
                     k += 1
 

@@ -2,15 +2,15 @@ import copy
 import numpy as np
 from typing import Union, List, Tuple
 
-from autorefl import AutoReflBase
-import instrument
+from .autorefl import AutoReflBase
+from . import instrument
 
 from refl1d.names import FitProblem, Experiment
 
-from datastruct import DataPoint, Intent
+from .datastruct import DataPoint, Intent
 from entropy import default_entropy_options
-from inference import default_fit_options
-from simulation import calc_expected_R, sim_data_N
+from .inference import default_fit_options
+from .simulation import calc_expected_R, sim_data_N
 
 class SimReflExperiment(AutoReflBase):
     """

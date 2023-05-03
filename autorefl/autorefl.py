@@ -171,7 +171,7 @@ class AutoReflBase(object):
 
         return modeldata
 
-    def initial_points(self) -> None:
+    def initial_points(self) -> List[DataPoint]:
         """
         Generate initial  measurement points based on figure of merit calculated without data.
 
@@ -254,7 +254,7 @@ class AutoReflBase(object):
 
         return qprofs
 
-    def fit_step(self, abort_test=None, outfid=None) -> None:
+    def fit_step(self, abort_test=lambda: False, outfid=None) -> None:
         """Analyzes most recent step"""
         
         # Update models
@@ -313,7 +313,7 @@ class AutoReflBase(object):
         MPMapper.stop_mapper(mapper)
         MPMapper.pool = None
 
-    def take_step(self, step=None, allow_repeat=True) -> None:
+    def take_step(self, step=None, allow_repeat=True) -> List[DataPoint]:
         """Analyze the last fitted step and add the next one
         
         Procedure:

@@ -10,9 +10,9 @@ from matplotlib.gridspec import GridSpec
 
 Color = Union[Tuple[float, float, float] , str]
 
-from simexp import SimReflExperiment, SimReflExperimentControl
-from datastruct import ExperimentStep, Intent
-from reduction import reduce, ReflData
+from .simexp import SimReflExperiment, SimReflExperimentControl
+from .datastruct import ExperimentStep, Intent
+from .reduction import reduce, ReflData
 
 
 def get_steps_time(steps: List[ExperimentStep], control: bool = False) -> np.ndarray:
