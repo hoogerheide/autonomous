@@ -180,14 +180,18 @@ class AutoReflBase(object):
         """
 
         # evenly spread the Q points over the models in the problem
-        nQs = [((self.npars + 1) // self.nmodels) + 1 if i < ((self.npars + 1) % self.nmodels) else ((self.npars + 1) // self.nmodels) for i in range(self.nmodels)]
-        newQs = [np.linspace(min(Qvec), max(Qvec), nQ) for nQ, Qvec in zip(nQs, self.measQ)]
+        #nQs = [((self.npars + 1) // self.nmodels) + 1 if i < ((self.npars + 1) % self.nmodels) else ((self.npars + 1) // self.nmodels) for i in range(self.nmodels)]
+        #newQs = [np.linspace(min(Qvec), max(Qvec), nQ) for nQ, Qvec in zip(nQs, self.measQ)]
 
         # generate an initial population and calculate the associated q-profiles
-        initpts = generate(self.problem, init='lhs', pop=self.fit_options['pop'], use_point=False)
+        initpts = generate(self.problem, init='lhs', pop=-max(
+                                       self.fit_options['pop'] * self.fit_options['steps'] / self.thinning,
+                                       3 / (self.eta) ** (self.npoints - 1)
+                                        ),
+                                        use_point=False)
 
         # Set attributes of "problem" for passing into multiprocessing routines
-        newvars = [self.instrument.Q2TdTLdL(nQ, mx, mQ) for nQ, mQ, mx in zip(newQs, self.measQ, self.x)]
+        newvars = [self.instrument.Q2TdTLdL(mQ, mx, mQ) for mQ, mx in zip(self.measQ, self.x)]
         setattr(self.problem, 'calcTdTLdL', newvars)
         setattr(self.problem, 'oversampling', self.oversampling)
         setattr(self.problem, 'resolution', self.instrument.resolution)
@@ -205,7 +209,7 @@ class AutoReflBase(object):
         initstep = ExperimentStep([])
         initstep.draw_pts = initpts
         initstep.qprofs = init_qprof
-
+        #print(initpts.shape, init_qprof[0].shape, len(self.problem.labels()))
         points = self.take_step(initstep)
 
         return points

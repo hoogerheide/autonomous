@@ -62,20 +62,20 @@ class AutoReflLauncher(StoppableThread):
 
         # start measurement
         print('AutoLauncher: starting measurement')
-        self.exp.add_initial_step()
-        self.measurementhandler.data[0] = exp.steps[0].points
-        self.exp.fit_step(abort_test=lambda: self.stopped())
-        points = self.exp.take_step(allow_repeat=False)
+        print('AutoLauncher: calculating initial points')
+        points = self.exp.initial_points()
         total_t = 0.0
         k = 0
-        print('AutoLauncher: finished initial step')
         while (total_t < self.maxtime) & (not self.stopped()):
+            # Add empty step
+            exp.add_step([])
+
+            # update total time and step number
             total_t += self.exp.steps[-1].meastime() + self.exp.steps[-1].movetime()
             k += 1
             print('AutoLauncher: Step: %i, Total time so far: %0.1f' % (k, total_t))
 
-            # Add empty step
-            exp.add_step([])
+            # create data placeholder (TODO: replace with set_default)
             if k not in self.measurementhandler.data.keys():
                 self.measurementhandler.data[k] = []
 
@@ -89,7 +89,7 @@ class AutoReflLauncher(StoppableThread):
             # need to wait for measurements to be acquired
             self._update_data()     # blocking, can be slow
 
-            # 
+            # start fitting
             if not self.stopped():
                 print('AutoLauncher: fitting data')
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
