@@ -6,7 +6,7 @@ from reflred.candor import edges, Candor
 from reflred.resolution import divergence
 from reflred.intent import Intent
 from reflred.nexusref import NCNRNeXusRefl, load_nexus_entries
-from reflred.refldata import ReflData
+from reflred.refldata import ReflData, Monitor, Detector, Sample, Slit, Monochromator
 
 def q2a(q, L):
     return np.degrees(np.arcsin(np.array(q)*L/(4*np.pi)))
@@ -243,6 +243,41 @@ class ReflectometerBase(object):
                                 for entry in ['spec', 'bkgp', 'bkgm'])
 
         return spec, bkgp, bkgm
+    
+    def x2ReflData(self, x: Union[np.ndarray, list, float], normbase: str, intent: Intent) -> List[ReflData]:
+        """
+        Converts x values into ReflData objects.
+
+        Intensity values v and dv are None.
+        """
+        x = np.array(x, ndmin=1)
+
+        rdlist = []
+
+        for ix in x:
+            _T = self.T(ix)[0]
+            _dT = self.dT(ix)[0]
+            _L = self.L(ix)[0]
+            _dL = self.dL(ix)[0]
+
+            s1, s2, s3, s4 = self.get_slits(ix)
+            d1, d2, d3, d4 = self.get_slit_distances()
+
+            rd = ReflData(slit1=Slit(distance=d1, x=s1),
+                          slit2=Slit(distance=d2, x=s2),
+                          slit3=Slit(distance=d3, x=s3),
+                          slit4=Slit(distance=d4, x=s4),
+                          monochromator=Monochromator(wavelength=_L.T, wavelength_resolution=_dL.T),
+                          sample=Sample(angle_x=_T),
+                          angular_resolution=_dT,
+                          detector=Detector(angle_x=2*_T, wavelength=_L.T, wavelength_resolution=_dL.T),
+                          _v=None, _dv=None, Qz_basis='actual', normbase=normbase)
+        
+            rd.intent = intent
+
+            rdlist.append(rd)
+
+        return rdlist
 
 class MAGIK(ReflectometerBase):
     """ MAGIK Reflectometer
@@ -329,7 +364,7 @@ class MAGIK(ReflectometerBase):
         """
 
         return ['detectorAngle', 'sampleAngle', 'slitAperture1','slitAperture2', 'slitAperture3',
-                'slitAperture4']
+                'slitAperture4', 'counter', 'pointDetector']
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
@@ -476,7 +511,7 @@ class CANDOR(ReflectometerBase):
         """
 
         return ['detectorArmAngle', 'sampleAngle', 'slitAperture1', 'slitAperture2',
-                'slitAperture3']
+                'slitAperture3', 'counter', 'multiDetector']
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
