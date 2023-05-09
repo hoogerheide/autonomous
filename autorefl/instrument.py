@@ -244,40 +244,50 @@ class ReflectometerBase(object):
 
         return spec, bkgp, bkgm
     
-    def x2ReflData(self, x: Union[np.ndarray, list, float], normbase: str, intent: Intent) -> List[ReflData]:
+    def x2ReflData(self, x: float,
+                   v: Union[np.ndarray, list, float], dv: Union[np.ndarray, list, float],
+                   intent: Intent) -> List[ReflData]:
         """
-        Converts x values into ReflData objects.
+        Converts single x value into ReflData object.
 
-        Intensity values v and dv are None.
+        Inputs:
+        x -- instrument configuration (single value, array, list). Required. One ReflData object
+             will be created for each x.
+        v -- number of counts if intent is specular or background; otherwise target incident intensity
+                counts for intensity. Required. Should have the same shape as self.T(x)[0]
+        dv -- error in v (standard deviation). Required. Same shape as v
+        intent -- reflred.intent.Intent object. Required.
+
+        Returns:
+        rd -- ReflData object
+
+
         """
-        x = np.array(x, ndmin=1)
 
-        rdlist = []
+        _T = self.T(x)[0]
+        _dT = self.dT(x)[0]
+        _L = self.L(x)[0]
+        _dL = self.dL(x)[0]
 
-        for ix in x:
-            _T = self.T(ix)[0]
-            _dT = self.dT(ix)[0]
-            _L = self.L(ix)[0]
-            _dL = self.dL(ix)[0]
+        s1, s2, s3, s4 = self.get_slits(x)
+        d1, d2, d3, d4 = self.get_slit_distances()
 
-            s1, s2, s3, s4 = self.get_slits(ix)
-            d1, d2, d3, d4 = self.get_slit_distances()
+        rd = ReflData(slit1=Slit(distance=d1, x=s1),
+                        slit2=Slit(distance=d2, x=s2),
+                        slit3=Slit(distance=d3, x=s3),
+                        slit4=Slit(distance=d4, x=s4),
+                        monochromator=Monochromator(wavelength=_L, wavelength_resolution=_dL),
+                        sample=Sample(angle_x=_T, angle_x_target=_T),
+                        angular_resolution=_dT,
+                        detector=Detector(angle_x=2*_T,
+                                        angle_x_target=2*_T,
+                                        wavelength=_L,
+                                        wavelength_resolution=_dL),
+                        Qz_basis='target', normbase='none', _v=v, _dv=dv)
+    
+        rd.intent = intent
 
-            rd = ReflData(slit1=Slit(distance=d1, x=s1),
-                          slit2=Slit(distance=d2, x=s2),
-                          slit3=Slit(distance=d3, x=s3),
-                          slit4=Slit(distance=d4, x=s4),
-                          monochromator=Monochromator(wavelength=_L.T, wavelength_resolution=_dL.T),
-                          sample=Sample(angle_x=_T),
-                          angular_resolution=_dT,
-                          detector=Detector(angle_x=2*_T, wavelength=_L.T, wavelength_resolution=_dL.T),
-                          _v=None, _dv=None, Qz_basis='actual', normbase=normbase)
-        
-            rd.intent = intent
-
-            rdlist.append(rd)
-
-        return rdlist
+        return rd
 
 class MAGIK(ReflectometerBase):
     """ MAGIK Reflectometer
