@@ -33,6 +33,7 @@ class AutoReflLauncher(StoppableThread):
     def __init__(self, exp: AutoReflExperiment,
                        signals: Signaller,
                        maxtime: float,
+                       use_simulated_data: bool = False,
                        cli_args: dict = {'name': 'test'},
                        *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,7 +41,7 @@ class AutoReflLauncher(StoppableThread):
         self.exp = exp
         self.signals = signals
         self.maxtime = maxtime
-        self.measurementhandler = MeasurementHandler(signaller, motors_to_move=exp.instrument.trajectoryMotors(), filename='test')
+        self.measurementhandler = MeasurementHandler(signaller, motors_to_move=exp.instrument.trajectoryMotors(), filename='test', use_simulated_data=use_simulated_data)
 
         fprefix = '%s_eta%0.2f_npoints%i' % (self.exp.instrument.name, exp.eta, exp.npoints)
         fsuffix = '' if cli_args['name'] is None else cli_args['name']

@@ -2,8 +2,11 @@ import copy
 import numpy as np
 from typing import Union, List, Tuple
 
-from .autorefl import AutoReflBase
 from . import instrument
+from .inference import default_fit_options
+from .reduction import ReflData
+
+from .autorefl import AutoReflBase, AutoReflExperiment
 
 from refl1d.names import FitProblem, Experiment
 
@@ -53,15 +56,7 @@ class SimReflExperiment(AutoReflBase):
         
         super().__init__(problem, Q, instrument, eta, npoints, switch_penalty,
                        switch_time_penalty, fit_options, entropy_options, oversampling,
-                       meas_bkg, startmodel, min_meas_time, select_pars)
-
-        calcmodel = copy.deepcopy(problem)
-        self.calcmodels: List[Union[Experiment, FitProblem]] = [calcmodel] if hasattr(calcmodel, 'fitness') else list(calcmodel.models)
-        if bestpars is not None:
-            calcmodel.setp(bestpars)
-
-        # add residual background
-        self.resid_bkg: np.ndarray = np.array([c.fitness.probe.background.value for c in self.calcmodels])
+                       meas_bkg, startmodel, min_meas_time, select_pars, bestpars)
 
     def request_data(self, newpoints, foms) -> List[DataPoint]:
         """
@@ -75,7 +70,11 @@ class SimReflExperiment(AutoReflBase):
         points = []
         for pt, fom in zip(newpoints, foms):
             mnum, idx, newx, new_meastime, new_bkgmeastime = pt
-            newpoints = self._generate_new_point(mnum, newx, new_meastime, new_bkgmeastime, fom[mnum][idx])
+            newpoints = [self._simulate_datapoint(mnum, newx, new_meastime, Intent.spec, fom[mnum][idx])]
+            if new_bkgmeastime > 0:
+                newpoints.append(self._simulate_datapoint(mnum, newx, new_bkgmeastime / 2.0, Intent.backp, fom[mnum][idx]))
+                newpoints.append(self._simulate_datapoint(mnum, newx, new_bkgmeastime / 2.0, Intent.backm, fom[mnum][idx]))
+
             newpoints[0].movet = self.instrument.movetime(newpoints[0].x)[0]
             for newpoint in newpoints:
                 points.append(newpoint)
@@ -89,50 +88,6 @@ class SimReflExperiment(AutoReflBase):
             self.instrument.x = newpoint.x
         
         return points
-
-    def _generate_new_point(self, mnum: int,
-                                  newx: float,
-                                  new_meastime: float,
-                                  new_bkgmeastime: float,
-                                  maxfom: Union[float, None] = None) -> List[DataPoint]:
-        """ Generates a new data point with simulated data from the specified x
-            position, model number, and measurement time
-            
-            Inputs:
-            mnum -- the model number of the new point
-            newx -- the x position of the new point
-            new_meastime -- the measurement time
-            maxfom -- the maximum of the figure of merit. Only used for record-keeping
-
-            Returns a single DataPoint object
-        """
-        
-        T = self.instrument.T(newx)[0]
-        dT = self.instrument.dT(newx)[0]
-        L = self.instrument.L(newx)[0]
-        dL = self.instrument.dL(newx)[0]
-
-        # for simulating data, need to subtract theta_offset from calculation models
-        # not all probes have theta_offset, however
-        # for now this is turned off. 
-        if False:
-            try:
-                to_calc = self.calcmodels[mnum].fitness.probe.theta_offset.value
-            except AttributeError:
-                to_calc = 0.0
-
-        calcR = calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
-        #print('expected R:', calcR)
-        incident_neutrons = self.instrument.intensity(newx) * new_meastime
-        N, Nbkg, Ninc = sim_data_N(calcR, incident_neutrons, resid_bkg=self.resid_bkg[mnum], meas_bkg=self.meas_bkg[mnum])
-        Nbkgp, Nbkgm = Nbkg
-        pts = [DataPoint(newx, new_meastime, mnum, (T, dT, L, dL, N[0], Ninc[0]), merit=maxfom, intent=Intent.spec)]
-
-        if new_bkgmeastime > 0:
-            pts.append(DataPoint(newx, new_bkgmeastime / 2.0, mnum, (T, dT, L, dL, Nbkgp[0], Ninc[0]), intent=Intent.backp))
-            pts.append(DataPoint(newx, new_bkgmeastime / 2.0, mnum, (T, dT, L, dL, Nbkgm[0], Ninc[0]), intent=Intent.backm))
-
-        return pts
 
 class SimReflExperimentControl(SimReflExperiment):
     r"""Control experiment with even or scaled distribution of count times
@@ -193,7 +148,10 @@ class SimReflExperimentControl(SimReflExperiment):
 
         for mnum, (newx, mtimeweight) in enumerate(zip(self.x, self.meastimeweights)):
             for x, t in zip(newx, total_time * mtimeweight):
-                pts = self._generate_new_point(mnum, x, t * (1 - self.frac_background), t * self.frac_background, None)
+                pts = [self._simulate_datapoint(mnum, x, t * (1 - self.frac_background), Intent.spec, None),
+                       self._simulate_datapoint(mnum, x, 0.5 * t * self.frac_background, Intent.backp, None),
+                       self._simulate_datapoint(mnum, x, 0.5 * t * self.frac_background, Intent.backm, None)]
+
                 pts[0].movet = self.instrument.movetime(x)[0]
                 for pt in pts:
                     points.append(pt)

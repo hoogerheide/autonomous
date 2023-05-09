@@ -65,7 +65,8 @@ class AutoReflBase(object):
                        meas_bkg: Union[float, List[float]] = 1e-6,
                        startmodel: int = 0,
                        min_meas_time: float = 10.0,
-                       select_pars: Union[list, None] = None) -> None:
+                       select_pars: Union[list, None] = None,
+                       bestpars: Union[np.ndarray, list, None] = None) -> None:
         
         # Load instrument
         self.instrument = instrument
@@ -149,6 +150,14 @@ class AutoReflBase(object):
         self.thinning = int(self.fit_options['steps']*0.8)
         self.init_entropy, _, _ = calc_init_entropy(problem, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
         self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
+
+        calcmodel = copy.deepcopy(problem)
+        self.calcmodels: List[Union[Experiment, FitProblem]] = [calcmodel] if hasattr(calcmodel, 'fitness') else list(calcmodel.models)
+        if bestpars is not None:
+            calcmodel.setp(bestpars)
+
+        # add residual background
+        self.resid_bkg: np.ndarray = np.array([c.fitness.probe.background.value for c in self.calcmodels])
 
     def get_all_points(self, modelnum: Union[int, None]) -> List[DataPoint]:
         # returns all data points associated with model with index modelnum
@@ -777,6 +786,41 @@ class AutoReflBase(object):
         # returns sorted list of lists, each with entries [max fom value, model number, measQ index]
         return top_n
 
+    def _simulate_datapoint(self, model_num: int,
+                                  x: float,
+                                  t: float,
+                                  intent: Intent,
+                                  merit: Union[float, None]) -> DataPoint:
+        """ Generates a new data point with simulated data from the specified x
+            position, model number, and measurement time
+            
+            Inputs:
+            mnum -- the model number of the new point
+            newx -- the x position of the new point
+            new_meastime -- the measurement time
+            maxfom -- the maximum of the figure of merit. Only used for record-keeping
+
+            Returns a single DataPoint object
+        """
+
+        T, dT, L, dL, intens = self.instrument.T(x)[0], self.instrument.dT(x)[0], \
+                        self.instrument.L(x)[0], self.instrument.dL(x)[0], \
+                        self.instrument.intensity(x)[0]
+
+        incident_neutrons = intens * t
+        calcR = calc_expected_R(self.calcmodels[model_num], T, dT, L, dL,
+                                self.oversampling, self.instrument.resolution)
+        Nspec, (Nbkg, _), Ninc = sim_data_N(calcR, incident_neutrons,
+                                                    self.resid_bkg[model_num],
+                                                    self.meas_bkg[model_num])
+        if intent == Intent.slit:
+            N = Ninc
+        elif (intent == Intent.backp) | (intent == Intent.backm):
+            N = Nbkg
+        else: #intent == Intent.spec
+            N = Nspec
+
+        return DataPoint(x, t, model_num, (T, dT, L, dL, N, Ninc), intent=intent, merit=merit)
 
     def save(self, fn) -> None:
         """Save a pickled version of the experiment"""
@@ -810,6 +854,9 @@ class AutoReflExperiment(AutoReflBase):
     Additional Inputs:
 
     filename -- string representing the filename. Recommended to have a scheme to use a unique name.
+                Required.
+    simulate_data -- boolean, optional, default False. If True, simulated data are used instead of
+                    instrument data
 
     """
 
@@ -827,11 +874,12 @@ class AutoReflExperiment(AutoReflBase):
                        meas_bkg: Union[float, List[float]] = 1e-6,
                        startmodel: int = 0,
                        min_meas_time: float = 10.0,
-                       select_pars: Union[list, None] = None) -> None:
+                       select_pars: Union[list, None] = None,
+                       bestpars: Union[np.ndarray, list, None] = None) -> None:
         
         super().__init__(problem, Q, instrument, eta, npoints, switch_penalty,
                        switch_time_penalty, fit_options, entropy_options, oversampling,
-                       meas_bkg, startmodel, min_meas_time, select_pars)
+                       meas_bkg, startmodel, min_meas_time, select_pars, bestpars)
 
         self.filename = filename
 
@@ -849,6 +897,7 @@ class AutoReflExperiment(AutoReflBase):
     def request_data(self, newpoints, foms) -> List[List[MeasurementPoint]]:
         """
         Requests new data. Creates data points to be added, e.g. to a measurement point queue.
+            Always populates point values with simulated data.
 
         Returns:
         List of measurement point lists, each with 1 or 3 dictionaries containing specular or
@@ -859,17 +908,12 @@ class AutoReflExperiment(AutoReflBase):
 
         def create_msg(point_id: int, model_num: int, x: float, t: float, intent: Intent, merit:float):
 
+            pt = self._simulate_datapoint(model_num, x, t, intent, merit)
+
             return MeasurementPoint(step_id,
                                     point_id=point_id,
                                     bank=self.instrument.bank,
-                                    base=DataPoint(x, t, model_num,
-                                                    (self.instrument.T(x)[0],
-                                                        self.instrument.dT(x)[0],
-                                                        self.instrument.L(x)[0],
-                                                        self.instrument.dL(x)[0],
-                                                        None,
-                                                        self.instrument.intensity(x)[0]),
-                                                    intent=intent),
+                                    base=pt,
                                     movements=self.instrument.trajectoryData(x, intent=intent))
 
             # NOTE: DataPoint.T may be different from actual T for backgorunds;

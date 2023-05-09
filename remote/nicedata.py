@@ -254,6 +254,7 @@ class MeasurementHandler(NICEInteractor):
                  motors_to_move: List[str],
                  filename: str,
                  host=None, port=None,
+                 use_simulated_data: bool = False,
                  *args, **kwargs) -> None:
         
         super().__init__(host=host, port=port, *args, **kwargs)
@@ -261,6 +262,7 @@ class MeasurementHandler(NICEInteractor):
         self.counter = StoppableNiceCounter(None, None)
         self.api = None
         self.api_locked = False
+        self.use_simulated_data = use_simulated_data
 
         self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
         self.filename = filename
@@ -404,14 +406,17 @@ class MeasurementHandler(NICEInteractor):
         """
 
         datapoint = basedatapoint.base
-        basedata = list(datapoint.data)
 
-        cts = np.array(counts, ndmin=1)
-        basedata[data_attributes.index('N')] = cts
-        datapoint.data = basedata
+        # only update count value if use_simulated_data flag is False
+        if not self.use_simulated_data:
+            basedata = list(datapoint.data)
 
-        # Shouldn't be necessary as interrupted counts will be ignored
-        datapoint.t = livetime
+            cts = np.array(counts, ndmin=1)
+            basedata[data_attributes.index('N')] = cts
+            datapoint.data = basedata
+
+            # Shouldn't be necessary as interrupted counts will be ignored
+            datapoint.t = livetime
 
         self._get_current_list(basedatapoint.step_id).append(datapoint)
 
