@@ -7,6 +7,7 @@ from reflred.candor import edges, _rebin_bank, QData
 from reflred.background import apply_background_subtraction, _ordinate
 from reflred.scale import apply_intensity_norm
 from reflred.refldata import ReflData, Sample, Detector, Monochromator, Monitor
+from reflred.joindata import join_datasets
 from dataflow.lib.uncertainty import Uncertainty as U, interp
 from .datastruct import DataPoint, data_attributes
 
@@ -99,6 +100,33 @@ def DataPoint2ReflData(Qbasis, data: List[DataPoint], normbase='none') -> Tuple[
     else:
 
         return None
+
+def join_datapoints(data: List[DataPoint]) -> QData:
+    """
+    Converts data in a list of DataPoints to a single QData (ReflData) object. Dimensionality of 
+    returned object is CANDOR-like so it can be used with reflred.candor._rebin_bank
+
+    Inputs:
+    data -- list of DataPoint objects. DataPoint.data must be a ReflData object, e.g. from
+            instrument.ReflectometerBase.x2ReflData.
+
+    Returns:
+    joined_qdata -- a QData object containing the joined data
+    """
+
+    joined_data = join_datasets([d.data for d in data], 0, 0)
+
+    joined_qdata = QData(joined_data,
+                     joined_data.Qz[:, None, None],
+                     joined_data.dQ[:, None, None],
+                     joined_data.v[:, None, None],
+                     joined_data.dv[:, None, None],
+                     joined_data.Ti[:, None, None],
+                     joined_data.angular_resolution[:, None, None],
+                     joined_data.Ld[:, None, None],
+                     joined_data.dL[:, None, None])
+    
+    return joined_qdata
 
 def reduce_datapoints(Qbasis: np.ndarray, specdata: List[DataPoint],
                         backp: Union[List[DataPoint], None], backm: Union[List[DataPoint], None],
