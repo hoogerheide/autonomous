@@ -53,16 +53,16 @@ class ReflectometerBase(object):
         self.bank = bank
 
     def x2q(self, x):
-        pass
+        raise NotImplementedError
 
     def x2a(self, x):
-        pass
+        raise NotImplementedError
 
     def qrange2xrange(self, qmin, qmax):
-        pass
+        raise NotImplementedError
 
     def intensity(self, x):
-        pass
+        raise NotImplementedError
 
     def meastime(self, x, totaltime):
 
@@ -215,7 +215,7 @@ class ReflectometerBase(object):
         Generates list of motors moved for trajectory
         """
 
-        return []
+        raise NotImplementedError
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
@@ -231,7 +231,7 @@ class ReflectometerBase(object):
         dtheta_bkg (default=0.5) -- angle offset in degrees for backp and backm measurements
         """
 
-        return []
+        raise NotImplementedError
 
     def load_data(self, filename: str) -> Tuple[ReflData, ReflData, ReflData]:
         """
@@ -329,8 +329,9 @@ class MAGIK(ReflectometerBase):
         # load calibration files
         try:
             d_intens = np.loadtxt('calibration/magik_intensity_hw106.refl')
+            self.d_intens = d_intens
 
-            self.p_intens = np.polyfit(d_intens[:,0], d_intens[:,1], 3, w=1/d_intens[:,2])
+            self.p_intens, self.p_intens_cov = np.polyfit(d_intens[:,0], d_intens[:,1], 3, w=1/d_intens[:,2], cov='unscaled')
         except OSError:
             warnings.warn('MAGIK calibration files not found, using defaults')
             self.p_intens = np.array([ 5.56637543e+02,  7.27944632e+04,  2.13479802e+02, -4.37052050e+01])
@@ -347,8 +348,27 @@ class MAGIK(ReflectometerBase):
     def intensity(self, x):
         news1 = self.get_slits(x)[0]
         incident_neutrons = np.polyval(self.p_intens, news1)
-    
+
         return np.array(incident_neutrons, ndmin=2).T
+
+    def intensity_with_error(self, x):
+        # NOTE: Code validated using a bumps polynomial fit
+        x = np.array(x, ndmin=1)
+        s1 = []
+        incident_neutron_rate = []
+        incident_neutron_rate_error = []
+
+        for ix in x:
+            news1 = self.get_slits(ix)[0]
+            s1.append(news1)
+            iincident_neutron_rate = np.polyval(self.p_intens, news1)
+            j = np.flipud(np.array([news1 ** i for i in range(len(self.p_intens))]))
+            iincident_neutron_rate_error = np.sqrt(j.T.dot(self.p_intens_cov.dot(j)))
+            incident_neutron_rate.append(iincident_neutron_rate)
+            incident_neutron_rate_error.append(iincident_neutron_rate_error)
+    
+        #print(np.array(incident_neutron_rate).shape, np.array(incident_neutron_rate_error).shape)
+        return np.array(s1, ndmin=2).reshape(x.shape), np.array(incident_neutron_rate, ndmin=2).reshape(x.shape), np.array(incident_neutron_rate_error, ndmin=2).reshape(x.shape)
 
     def T(self, x):
 
@@ -464,8 +484,11 @@ class CANDOR(ReflectometerBase):
             d = json.load(f)
         
         self.intens_calib = np.squeeze(np.array(d['outputs'][0]['v']))
+        self.dintens_calib = np.squeeze(np.array(d['outputs'][0]['dv']))
         self.s1_intens_calib = np.squeeze(d['outputs'][0]['x'])
         #ps1 = np.polynomial.polynomial.polyfit(s1, intens, 1)
+
+        print(self.intens_calib.shape)
 
     def x2q(self, x):
         return a2q(self.T(x), self.L(x))
