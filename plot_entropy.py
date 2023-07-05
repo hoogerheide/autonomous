@@ -112,7 +112,7 @@ def plot_entropy(tscale=None, min_time=None, control=None, experiments=[], label
     min_t_av = min_time
 
     if control is not None:
-        fig, all_ax = plt.subplots(2, 2, sharex=True, gridspec_kw={'hspace': 0}, figsize=(12, 10))
+        fig, all_ax = plt.subplots(2, 2, sharex=True, gridspec_kw={'hspace': 0}, figsize=(10, 8))
         axm, ax = all_ax[:,0]
         caxm, cax = all_ax[:,1]
     else:
