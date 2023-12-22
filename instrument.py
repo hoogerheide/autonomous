@@ -236,7 +236,8 @@ class CANDOR(ReflectometerBase):
         
         self.intens_calib = np.squeeze(np.array(d['outputs'][0]['v']))
         self.s1_intens_calib = np.squeeze(d['outputs'][0]['x'])
-        #ps1 = np.polynomial.polynomial.polyfit(s1, intens, 1)
+        crit = self.s1_intens_calib < 1
+        self.p_intens = np.polynomial.polynomial.polyfit(self.s1_intens_calib[crit], self.intens_calib[crit], 2)
 
     def x2q(self, x):
         return a2q(self.T(x), self.L(x))
@@ -256,6 +257,12 @@ class CANDOR(ReflectometerBase):
         incident_neutrons = [np.interp(news1, self.s1_intens_calib, intens) for intens in self.intens_calib.T]
     
         return np.array(incident_neutrons, ndmin=2).T
+    
+    def intensity_interp(self, x):
+        news1 = self.get_slits(x)[0]
+        incident_neutrons = np.polynomial.polynomial.polyval(news1, self.p_intens)
+    
+        return np.array(incident_neutrons, ndmin=2).T    
 
     def meastime(self, x, totaltime):
 
