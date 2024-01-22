@@ -1,13 +1,20 @@
 import datetime
 import copy
 import os
-import argparse
+import sys
+import time
 from queue import Empty
 
 import numpy as np
 
+from remote.nicepath import nicepath
+sys.path.append(nicepath)
+import nice.remote as nice_remote
+
 from remote.util import StoppableThread
-from remote.nicedata import Signaller, blocking
+from remote.nicedata import Signaller, blocking, MeasurementHandler
+from remote.monitor import SocketMonitor, SocketServer, QueueMonitor
+from bumps.fitters import ConsoleMonitor
 
 from autorefl.autorefl import AutoReflExperiment
 
@@ -41,7 +48,7 @@ class AutoReflLauncher(StoppableThread):
         self.exp = exp
         self.signals = signals
         self.maxtime = maxtime
-        self.measurementhandler = MeasurementHandler(signaller, motors_to_move=exp.instrument.trajectoryMotors(), filename='test', use_simulated_data=use_simulated_data)
+        self.measurementhandler = MeasurementHandler(signals, motors_to_move=exp.instrument.trajectoryMotors(), filename='test', use_simulated_data=use_simulated_data, name='MeasurementHandler')
 
         fprefix = '%s_eta%0.2f_npoints%i' % (self.exp.instrument.name, exp.eta, exp.npoints)
         fsuffix = '' if cli_args['name'] is None else cli_args['name']
@@ -53,27 +60,40 @@ class AutoReflLauncher(StoppableThread):
 
     def run(self):
 
-        # start queue listener
-        self.measurementhandler.start()
+        socketserver = SocketServer()
+        socketserver.start()
+        queuemonitor = QueueMonitor(self.signals.measurement_queue, socketserver.inqueue)
+        #fitmonitor = SocketMonitor(socketserver.inqueue)
+
+        api = nice_remote.connect('localhost', 'AutoRefl')
+        api.run_task(self.measurementhandler, wait=False)
+#        print(self.measurementhandler.name)
+#        t1 = threading.Thread(target=lambda: api.run_task(self.measurementhandler), daemon=True)
+#        t1.start()
 
         # wait for global start
         # TODO: set to a Barrier that all child threads need to cross.
         self.signals.global_start.set()
         self.signals.first_measurement_complete.set()
 
+        # clear fit output
+        time.sleep(1)
+        socketserver.write(('clear', None))
+
         # start measurement
         print('AutoLauncher: starting measurement')
+        socketserver.write(('fit_update', 'Calculating initial points'))
         print('AutoLauncher: calculating initial points')
         points = self.exp.initial_points()
         total_t = 0.0
         k = 0
-        while (total_t < self.maxtime) & (not self.stopped()):
-            # Add empty step
-            exp.add_step([])
 
-            # update total time and step number
-            total_t += self.exp.steps[-1].meastime() + self.exp.steps[-1].movetime()
-            k += 1
+        while (total_t < self.maxtime) & (not self.stopped()):
+
+            # Add empty step
+            self.exp.add_step([])
+
+            socketserver.write(('fit_update', 'Step: %i, Total time so far: %0.1f' % (k, total_t)))
             print('AutoLauncher: Step: %i, Total time so far: %0.1f' % (k, total_t))
 
             # create data placeholder (TODO: replace with set_default)
@@ -83,6 +103,7 @@ class AutoReflLauncher(StoppableThread):
             print('AutoLauncher: updating queue')
             # wait for measurement to become complete, then add new points
             self.signals.measurement_queue.put(points)
+            queuemonitor.update()
             self.signals.measurement_queue_updated.set()
             self.signals.first_measurement_complete.clear()
             self.signals.measurement_queue_empty.clear()
@@ -94,7 +115,11 @@ class AutoReflLauncher(StoppableThread):
             if not self.stopped():
                 print('AutoLauncher: fitting data')
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
-                self.exp.fit_step(abort_test=lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set()))
+                #stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
+                stop_fit_criterion = lambda: self.stopped()
+                #monitor = SocketMonitor(socketserver.inqueue)
+                monitor = None
+                self.exp.fit_step(abort_test=stop_fit_criterion, monitor=monitor)
 
                 if not self.stopped():
                     print('AutoLauncher: calculating FOM')
@@ -112,7 +137,15 @@ class AutoReflLauncher(StoppableThread):
             print('AutoLauncher: saving')
             self.exp.save(self.pathname + '/autoexp0.pickle')
 
+            # update total time and step number
+            total_t += self.exp.steps[-1].meastime() + self.exp.steps[-1].movetime()
+            k += 1
+
+
         # also signals measurementhandler to stop
+        api.end_serve()
+        api.disconnect()
+        socketserver.stop()
         self.stop()
 
     @blocking
@@ -137,13 +170,10 @@ class AutoReflLauncher(StoppableThread):
 if __name__ == '__main__':
 
     # python -m autorefl_launch
-    import time
-
-    from remote.nicedata import MeasurementHandler
     from autorefl.instrument import MAGIK, CANDOR
     from bumps.cli import load_model
 
-    instr = CANDOR()
+    instr = MAGIK()
 
     signaller = Signaller()
     #measuredata = MeasurementHandler(signaller, motors_to_move=instr.trajectoryMotors(), filename='test')
@@ -151,8 +181,8 @@ if __name__ == '__main__':
     modelfile = 'example_model/ssblm_d2o.py'
     model = load_model(modelfile)
 
-#    bestpars = args.pars
-#    bestp = np.array([float(line.split(' ')[-1]) for line in open(bestpars, 'r').readlines()]) if bestpars is not None else None
+    bestpars = 'example_model/ssblm_d2o_tosb0.par'
+    bestp = np.array([float(line.split(' ')[-1]) for line in open(bestpars, 'r').readlines()]) if bestpars is not None else None
 
     # measurement background
  #   meas_bkg = args.meas_bkg if args.meas_bkg is not None else np.full(len(list(model.models)), 1e-5)
@@ -172,7 +202,7 @@ if __name__ == '__main__':
     measQ = (qmin-qstep) + np.cumsum(dq)
     #measQ = [m.fitness.probe.Q for m in model.models]
 
-    exp = AutoReflExperiment('test', model, measQ, instr, eta=0.5, npoints=6, select_pars=sel, fit_options={'burn': 50, 'steps': 10, 'pop': 2})
+    exp = AutoReflExperiment('test', model, measQ, instr, bestpars=bestp, meas_bkg=3e-6, eta=0.5, npoints=6, select_pars=sel, min_meas_time=10.0, fit_options={'burn': 1000, 'steps': 500, 'pop': 8})
     if instr.name == 'MAGIK':
         exp.x = exp.measQ
     elif instr.name == 'CANDOR':
@@ -191,7 +221,7 @@ if __name__ == '__main__':
             exp.x[i] = x
 
 
-    autolauncher = AutoReflLauncher(exp, signaller, 1000, cli_args={'name': 'testauto'})
+    autolauncher = AutoReflLauncher(exp, signaller, 7200, use_simulated_data=True, cli_args={'name': 'testauto'})
     kinput = KeyboardInput()
 
     print("launching")

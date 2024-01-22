@@ -18,6 +18,7 @@ import nice
 import nice.datastream
 import nice.core
 import nice.writer
+from nice.remote import Task
 
 def blocking(func):
     """
@@ -223,9 +224,11 @@ end_states = [
 
 class StoppableNiceCounter(StoppableThread):
 
-    def __init__(self, api, count_args, *args, **kwargs):
+    def __init__(self, api, filePrefix, entry, time, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.count_args = count_args
+        self.filePrefix = filePrefix
+        self.entry = entry
+        self.time = time
         self.api = api
         self.running = False
 
@@ -235,8 +238,9 @@ class StoppableNiceCounter(StoppableThread):
 
         # Running count
         if not self.stopped():
-            self.api.queue.wait_for(self.api.count(*self.count_args).UUID, end_states)
-
+            self.api.measurement_count(filePrefix=self.filePrefix,
+                                        entry=self.entry,
+                                        presetTime=self.time)
         self.running = False
 
     def stop(self):
@@ -245,7 +249,7 @@ class StoppableNiceCounter(StoppableThread):
             print('Interrupting count!')
             self.api.terminateCount()
 
-class MeasurementHandler(NICEInteractor):
+class MeasurementHandler(Task):
     """
     Threaded handler for measurement control
     """
@@ -253,14 +257,12 @@ class MeasurementHandler(NICEInteractor):
     def __init__(self, signals: Signaller,
                  motors_to_move: List[str],
                  filename: str,
-                 host=None, port=None,
                  use_simulated_data: bool = False,
                  *args, **kwargs) -> None:
         
-        super().__init__(host=host, port=port, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.signals = signals
-        self.counter = StoppableNiceCounter(None, None)
-        self.api = None
+        self.active_count = None
         self.api_locked = False
         self.use_simulated_data = use_simulated_data
 
@@ -270,6 +272,13 @@ class MeasurementHandler(NICEInteractor):
         
         # data repository
         self.data: Dict[int, List[DataPoint]] = {}
+        self._stop_event = Event()
+
+    def stopped(self):
+        return self._stop_event.is_set()
+
+    def clear(self):
+        self._stop_event.clear()
 
     def _get_current_list(self, step_id) -> list:
 
@@ -312,7 +321,7 @@ class MeasurementHandler(NICEInteractor):
     @blocking
     def _measure_queue(self) -> None:
 
-        print('Getting queue value:')
+        print('MeasurementHandler: getting queue value')
 
         # Get the entire list of possible measurements
         complete_list: List[List[MeasurementPoint]] = self.signals.measurement_queue.get()
@@ -333,7 +342,12 @@ class MeasurementHandler(NICEInteractor):
                 for ptnum, pt in enumerate(point_list):
                     
                     print(f'MeasurementHandler: measuring list {ptlistnum + 1}, point {ptnum + 1} of {len(point_list)}, step ID {pt.step_id}')
-                    self._move_count(pt)
+                    # TODO: Remove this if statement
+                    if not self.use_simulated_data:
+                        self._move_count(pt)
+                    else:
+                        self._get_current_list(pt.step_id).append(pt.base)
+
 
                 if ptlistnum == 0:
                     # signal that first point list is complete, but only after the first set
@@ -347,10 +361,6 @@ class MeasurementHandler(NICEInteractor):
     @blocking
     def _move_count(self, pt: MeasurementPoint) -> None:
 
-        # must start the count before the move, otherwise motors are not returned
-        #self.api.startScan(1, self.motors_to_move, None, pt.base.intent, self._filename, 'test_traj', False)
-        self.api.startCount(1, self.motors_to_move, self._filename, pt.base.intent, self._filename, 'test_traj', False)
-
         # update current instrument position (for figure of merit calculation)
         try:
             self.signals.current_instrument_x.get_nowait()
@@ -362,7 +372,7 @@ class MeasurementHandler(NICEInteractor):
 
         # blocking
         init_time = time.time()
-        self.api.queue.wait_for(self.api.move(pt.movements, False).UUID, end_states)
+        self.api.move(pt.movements)
         move_time = time.time() - init_time
 
         # add actual movement time
@@ -370,33 +380,32 @@ class MeasurementHandler(NICEInteractor):
 
         # blocking count call
         self._count(pt)
-        
-        self.api.endCount(1, self.motors_to_move, self._filename, pt.base.intent, self._filename, 'test_traj')
-        #self.api.endScan(1, self.motors_to_move, 'test', pt.base.intent, self._filename, 'test_traj')
 
     @blocking
     def _count(self, pt: MeasurementPoint) -> None:
 
-        print(f'MeasurementHandler: counting')
-        self.counter = StoppableNiceCounter(self.api, (pt.base.t, -1, -1, ''))
+        print(f'MeasurementHandler: counting {self._filename, pt.base.intent, pt.base.t}')
 
-        #api.queue.wait_for(api.count(2.1, -1, -1, '').UUID, end_states)
-        self.counter.start()
-        self.counter.join()
-        self.counter.stop()
+        # set up active count process; this allows clean exiting in stop() using terminateCount()
+        self.active_count = self.api.measurement_count(filePrefix=self._filename,
+                        entry=pt.base.intent,
+                        presetTime=pt.base.t, wait=False)
+        self.api.wait(self.active_count)
 
-        detectorName = self.api.readValue('counter.countAgainstDetector')
+        detectorName = self.api.read('counter.countAgainstDetector')
         print(f'MeasurementHandler: reading count value from {detectorName}')
-        counts = self.api.readValue(f'{detectorName}.counts')
+        counts = self.api.read(f'{detectorName}.counts')
         counts = [int(ct) for ct in counts]
 
         # select subset of counts corresponding to desired detector bank (only for multiDetector)
         if pt.bank is not None:
-            strides = self.api.readValue(f'{detectorName}.strides')
+            strides = self.api.read(f'{detectorName}.strides')
             small_stride = int(strides[0])
             counts = counts[int(pt.bank)::(small_stride + 1)]
             
-        livetime = float(self.api.readValue('counter.liveTime'))
+        livetime = float(self.api.read('counter.liveTime'))
+
+        print(f'MeasurementHandler: got {counts} counts with live time {livetime}')
 
         self._handle_data(pt, counts, livetime)
 
@@ -422,21 +431,16 @@ class MeasurementHandler(NICEInteractor):
 
     def run(self):
 
-        # connect NICE API
-        self.connect()
-        
+        print(f'MeasurementHandler: starting measurement task')
+
         # start trajectory
-        self.api.startTrajectory(1, self.motors_to_move, self.filename, None, self.filename, 'test_traj', False)
-        self.api.startScan(1, self.motors_to_move, self.filename, Intent.spec, self.filename, 'test_traj', False)
+        self.api.measurement_start(control_nodes=self.motors_to_move, title='test_traj')
 
         # blocking: will wait until configuration comes through
         #self.signals.new_trajectory_acquired.wait()
         #scaninfo = self.signals.trajectory_queue.get()
 
         self._filename = self.filename #scaninfo['data']['trajectoryData.fileName']
-
-        self.api.startScan(1, self.motors_to_move, self.filename, Intent.backp, self._filename, 'test_traj', False)
-        self.api.startScan(1, self.motors_to_move, self.filename, Intent.backm, self._filename, 'test_traj', False)
 
         # wait for global start signal to come in
         self.signals.global_start.wait()
@@ -460,23 +464,21 @@ class MeasurementHandler(NICEInteractor):
 
             self._measure_queue()
             
-        self.api.endScan(1, self.motors_to_move, None, Intent.spec, self._filename, 'test_traj')
-        self.api.endScan(1, self.motors_to_move, None, Intent.backp, self._filename, 'test_traj')
-        self.api.endScan(1, self.motors_to_move, None, Intent.backm, self._filename, 'test_traj')
-        self.api.endTrajectory(1, self.motors_to_move, None, None, self._filename, 'test_traj')
-
-        self.disconnect()
+        self.api.measurement_end()
 
     def stop(self):
         print('MeasurementHandler: stopping')
-        super().stop()
+        self._stop_event.set()
+        #super().stop()
 
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event. May have downstream effects if this event is ever used for something else
         self.signals.global_start.set()
         self.signals.measurement_queue_updated.set()
         self.signals.first_measurement_complete.set()
-        self.counter.stop()
+        if self.active_count is not None:
+            if not self.active_count.isFinished():
+                self.api.terminateCount()
 
 
 if __name__ == '__main__':
