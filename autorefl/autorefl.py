@@ -263,7 +263,7 @@ class AutoReflBase(object):
 
         return qprofs
 
-    def fit_step(self, abort_test=lambda: False, outfid=None) -> None:
+    def fit_step(self, abort_test=lambda: False, monitor=None) -> None:
         """Analyzes most recent step"""
         
         # Update models
@@ -279,9 +279,7 @@ class AutoReflBase(object):
         mapper = MPMapper.start_mapper(self.problem, None, cpus=0)
 
         # set output stream
-        if outfid is not None:
-            monitor = StepMonitor(self.problem, outfid)
-        else:
+        if monitor is None:
             monitor = ConsoleMonitor(self.problem)
         
         # Condition and run fit
@@ -289,33 +287,33 @@ class AutoReflBase(object):
         options=_fill_defaults(self.fit_options, fitter.settings)
         result = fitter.solve(mapper=mapper, monitors=[monitor], abort_test=abort_test, initial_population=self.restart_pop, **options)
 
-        if not abort_test():
-            # Save head state for initializing the next fit step
-            _, chains, _ = fitter.state.chains()
-            self.restart_pop = chains[-1, : ,:]
+        #if not abort_test():
+        # Save head state for initializing the next fit step
+        _, chains, _ = fitter.state.chains()
+        self.restart_pop = chains[-1, : ,:]
 
-            # Analyze the fit state and save values
-            fitter.state.keep_best()
-            fitter.state.mark_outliers()
+        # Analyze the fit state and save values
+        fitter.state.keep_best()
+        fitter.state.mark_outliers()
 
-            step = self.steps[-1]
-            step.chain_pop = chains[-1, :, :]
-            draw = fitter.state.draw(thin=self.thinning)
-            step.draw_pts = draw.points
-            step.draw_logp = draw.logp
-            step.best_logp = fitter.state.best()[1]
-            self.problem.setp(fitter.state.best()[0])
-            step.final_chisq = self.problem.chisq_str()
-            step.H, _, _ = calc_entropy(step.draw_pts, select_pars=None, options=self.entropy_options)
-            step.dH = self.init_entropy - step.H
-            step.H_marg, _, _ = calc_entropy(step.draw_pts, select_pars=self.sel, options=self.entropy_options)
-            step.dH_marg = self.init_entropy_marg - step.H_marg
+        step = self.steps[-1]
+        step.chain_pop = chains[-1, :, :]
+        draw = fitter.state.draw(thin=self.thinning)
+        step.draw_pts = draw.points
+        step.draw_logp = draw.logp
+        step.best_logp = fitter.state.best()[1]
+        self.problem.setp(fitter.state.best()[0])
+        step.final_chisq = self.problem.chisq_str()
+        step.H, _, _ = calc_entropy(step.draw_pts, select_pars=None, options=self.entropy_options)
+        step.dH = self.init_entropy - step.H
+        step.H_marg, _, _ = calc_entropy(step.draw_pts, select_pars=self.sel, options=self.entropy_options)
+        step.dH_marg = self.init_entropy_marg - step.H_marg
 
-            # Calculate the Q profiles associated with posterior distribution
-            print('Calculating %i Q profiles:' % (step.draw_pts.shape[0]))
-            init_time = time.time()
-            step.qprofs = self.calc_qprofiles(step.draw_pts)
-            print('Calculation time: %f' % (time.time() - init_time))
+        # Calculate the Q profiles associated with posterior distribution
+        print('Calculating %i Q profiles:' % (step.draw_pts.shape[0]))
+        init_time = time.time()
+        step.qprofs = self.calc_qprofiles(step.draw_pts)
+        print('Calculation time: %f' % (time.time() - init_time))
 
         # Terminate the multiprocessing pool (required to avoid memory issues
         # if run is stopped after current fit step)
@@ -523,12 +521,22 @@ class AutoReflBase(object):
             bkg, bkgvar = interpolate_background(Qth, bkgpdata, bkgmdata)
 
             # if real measurement backgrounds are available, use them
-            qbkg = bkg if bkg is not None else np.full_like(Qth, qbkg_default)
+            if bkg is None:
+                qbkg = np.full_like(Qth, qbkg_default)
+            elif not np.any(bkg):
+                qbkg = np.full_like(Qth, qbkg_default)
+            else:
+                qbkg = bkg
             
             # also calculate the background uncertainty. If real backgrounds are not available, use
             # 1.0 so they will always be measured.
-            dbkg = np.sqrt(bkgvar) if bkgvar is not None else np.full_like(Qth, 1.0)
-
+            if bkgvar is None:
+                dbkg = np.full_like(Qth, 1.0)
+            elif not np.any(bkgvar):
+                dbkg = np.full_like(Qth, 1.0)
+            else:
+                qbkg = np.sqrt(bkgvar)
+            
             if show_plots:
                 print(qprof.shape, qbkg.shape)
                 if spec is not None:
@@ -559,8 +567,15 @@ class AutoReflBase(object):
             #interp_refl_bkg = interp1d(Qth, qbkg, fill_value=(qbkg[0], qbkg[-1]), bounds_error=False)
             #xqbkg = np.array(interp_refl_bkg(q))
             xqbkg, xdbkg2 = interpolate_background(q, bkgpdata, bkgmdata)
-            xqbkg = xqbkg if xqbkg is not None else np.full_like(q, qbkg_default)
-            xdbkg2 = xdbkg2 if xdbkg2 is not None else np.full_like(q, 1.0)
+            if xqbkg is None:
+                xqbkg = np.full_like(q, qbkg_default)
+            elif not np.any(xqbkg):
+                xqbkg = np.full_like(q, qbkg_default)
+
+            if xdbkg2 is None:
+                xdbkg2 = np.full_like(q, 1.0)
+            elif not np.any(xdbkg2):
+                xdbkg2 = np.full_like(q, 1.0)
 
             intensities.append(incident_neutrons)
             intens_shapes.append(init_shape)
@@ -781,7 +796,12 @@ class AutoReflBase(object):
         maxidxs_m = [[fom, m, idx] for m, (idxs, mfoms) in enumerate(zip(maxidxs, maxfoms)) for idx, fom in zip(idxs, mfoms)]
         #print(maxidxs_m)
         # select top point
-        top_n = sorted(maxidxs_m, reverse=True)[start:min(start+1, len(maxidxs_m))][0]
+        #print(scaled_foms)
+        try:
+            top_n = sorted(maxidxs_m, reverse=True)[start:min(start+1, len(maxidxs_m))][0]
+        except Exception as e:
+            raise e
+
 
         # returns sorted list of lists, each with entries [max fom value, model number, measQ index]
         return top_n
@@ -808,7 +828,7 @@ class AutoReflBase(object):
                         self.instrument.intensity(x)[0]
 
         incident_neutrons = intens * t
-        calcR = calc_expected_R(self.calcmodels[model_num], T, dT, L, dL,
+        calcR = calc_expected_R(self.calcmodels[model_num].fitness, T, dT, L, dL,
                                 self.oversampling, self.instrument.resolution)
         Nspec, (Nbkg, _), Ninc = sim_data_N(calcR, incident_neutrons,
                                                     self.resid_bkg[model_num],
