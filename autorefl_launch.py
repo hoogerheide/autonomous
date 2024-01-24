@@ -115,11 +115,12 @@ class AutoReflLauncher(StoppableThread):
             if not self.stopped():
                 print('AutoLauncher: fitting data')
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
-                #stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
-                stop_fit_criterion = lambda: self.stopped()
-                #monitor = SocketMonitor(socketserver.inqueue)
-                monitor = None
-                self.exp.fit_step(abort_test=stop_fit_criterion, monitor=monitor)
+                stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
+                #stop_fit_criterion = lambda: self.stopped()
+                monitors = [ConsoleMonitor(self.exp.problem), SocketMonitor(socketserver.inqueue)]
+                self.exp.fit_step(abort_test=stop_fit_criterion, monitors=monitors)
+
+                socketserver.write(('fit_update', 'Final chi-squared: '+ self.exp.steps[-1].final_chisq))
 
                 if not self.stopped():
                     print('AutoLauncher: calculating FOM')
@@ -143,6 +144,7 @@ class AutoReflLauncher(StoppableThread):
 
 
         # also signals measurementhandler to stop
+        self.measurementhandler.stop()
         api.end_serve()
         api.disconnect()
         socketserver.stop()
@@ -163,9 +165,6 @@ class AutoReflLauncher(StoppableThread):
     def stop(self):
         print('AutoReflHandler: stopping')
         super().stop()
-
-        # terminates count, which will update data
-        self.measurementhandler.stop()
 
 if __name__ == '__main__':
 
@@ -221,7 +220,7 @@ if __name__ == '__main__':
             exp.x[i] = x
 
 
-    autolauncher = AutoReflLauncher(exp, signaller, 7200, use_simulated_data=True, cli_args={'name': 'testauto'})
+    autolauncher = AutoReflLauncher(exp, signaller, 720, use_simulated_data=True, cli_args={'name': 'testauto'})
     kinput = KeyboardInput()
 
     print("launching")
