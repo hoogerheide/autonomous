@@ -265,6 +265,7 @@ class MeasurementHandler(Task):
         self.active_count = None
         self.api_locked = False
         self.use_simulated_data = use_simulated_data
+        self.publish_callback = None
 
         self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
         self.filename = filename
@@ -279,6 +280,10 @@ class MeasurementHandler(Task):
 
     def clear(self):
         self._stop_event.clear()
+
+    def publish(self, data):
+        if self.publish_callback is not None:
+            self.publish_callback(data)
 
     def _get_current_list(self, step_id) -> list:
 
@@ -343,10 +348,12 @@ class MeasurementHandler(Task):
                     
                     print(f'MeasurementHandler: measuring list {ptlistnum + 1}, point {ptnum + 1} of {len(point_list)}, step ID {pt.step_id}')
                     # TODO: Remove this if statement
-                    if not self.use_simulated_data:
-                        self._move_count(pt)
-                    else:
-                        self._get_current_list(pt.step_id).append(pt.base)
+                    #if not self.use_simulated_data:
+                    self.publish(f'point_{pt.step_id}_{pt.point_id}_{ptnum}')
+                    self._move_count(pt)
+                    self.publish(None)
+                        #else:
+                        #self._get_current_list(pt.step_id).append(pt.base)
 
 
                 if ptlistnum == 0:
@@ -474,11 +481,11 @@ class MeasurementHandler(Task):
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event. May have downstream effects if this event is ever used for something else
         self.signals.global_start.set()
-        self.signals.measurement_queue_updated.set()
-        self.signals.first_measurement_complete.set()
         if self.active_count is not None:
             if not self.active_count.isFinished():
-                self.api.terminateCount()
+                self.api.terminateCount()        
+        self.signals.measurement_queue_updated.set()
+        self.signals.first_measurement_complete.set()
 
 
 if __name__ == '__main__':

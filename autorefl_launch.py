@@ -63,6 +63,7 @@ class AutoReflLauncher(StoppableThread):
         socketserver = SocketServer()
         socketserver.start()
         queuemonitor = QueueMonitor(self.signals.measurement_queue, socketserver.inqueue)
+        self.measurementhandler.publish_callback = lambda data: socketserver.write(('set_current_measurement', data))
         #fitmonitor = SocketMonitor(socketserver.inqueue)
 
         api = nice_remote.connect('localhost', 'AutoRefl')
@@ -114,6 +115,7 @@ class AutoReflLauncher(StoppableThread):
             # start fitting
             if not self.stopped():
                 print('AutoLauncher: fitting data')
+                socketserver.write(('fit_update', 'Initializing fit...'))
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
                 stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
                 #stop_fit_criterion = lambda: self.stopped()
@@ -220,7 +222,7 @@ if __name__ == '__main__':
             exp.x[i] = x
 
 
-    autolauncher = AutoReflLauncher(exp, signaller, 720, use_simulated_data=True, cli_args={'name': 'testauto'})
+    autolauncher = AutoReflLauncher(exp, signaller, 7200, use_simulated_data=True, cli_args={'name': 'testauto'})
     kinput = KeyboardInput()
 
     print("launching")
