@@ -195,7 +195,7 @@ class AutoReflBase(object):
         # generate an initial population and calculate the associated q-profiles
         initpts = generate(self.problem, init='lhs', pop=-max(
                                        self.fit_options['pop'] * self.fit_options['steps'] / self.thinning,
-                                       3 / (self.eta) ** (self.npoints - 1)
+                                       8 / (self.eta) ** (self.npoints - 1)
                                         ),
                                         use_point=False)
 
@@ -263,7 +263,7 @@ class AutoReflBase(object):
 
         return qprofs
 
-    def fit_step(self, abort_test=lambda: False, monitor=None) -> None:
+    def fit_step(self, abort_test=lambda: False, monitors=None) -> None:
         """Analyzes most recent step"""
         
         # Update models
@@ -279,13 +279,13 @@ class AutoReflBase(object):
         mapper = MPMapper.start_mapper(self.problem, None, cpus=0)
 
         # set output stream
-        if monitor is None:
-            monitor = ConsoleMonitor(self.problem)
+        if monitors is None:
+            monitors = [ConsoleMonitor(self.problem)]
         
         # Condition and run fit
         fitter = DreamFitPlus(self.problem)
         options=_fill_defaults(self.fit_options, fitter.settings)
-        result = fitter.solve(mapper=mapper, monitors=[monitor], abort_test=abort_test, initial_population=self.restart_pop, **options)
+        result = fitter.solve(mapper=mapper, monitors=monitors, abort_test=abort_test, initial_population=self.restart_pop, **options)
 
         #if not abort_test():
         # Save head state for initializing the next fit step
