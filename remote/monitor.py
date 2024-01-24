@@ -1,0 +1,127 @@
+from typing import List
+
+import time
+import asyncio
+from aiohttp import web
+import socketio
+from queue import Queue
+from dataclasses import asdict
+from bumps.monitor import TimedUpdate
+from remote.nicedata import Signaller
+from remote.util import StoppableThread
+from autorefl.datastruct import MeasurementPoint
+
+sio = socketio.AsyncServer(async_mode='aiohttp')
+app = web.Application()
+sio.attach(app)
+
+async def hello(request):
+    #return web.Response(text="Hello, world")
+    return web.FileResponse('remote/socketpage.html')
+
+app.add_routes([web.get('/', hello)])
+
+class SocketServer(StoppableThread):
+
+    def __init__(self, *args, host='localhost', port=5012, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.host = host
+        self.port = port
+        self.inqueue: Queue = Queue()
+
+    def run(self):
+
+        asyncio.run(self.serve())
+
+    async def serve(self):
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, self.host, self.port)
+        await site.start()
+
+        qlisten = asyncio.create_task(self.emit_queue())
+
+        await asyncio.to_thread(self._stop_event.wait)
+        self.inqueue.put((None, None), block=False)
+        await asyncio.gather(runner.cleanup(),
+                             qlisten)
+
+    async def emit_queue(self):
+
+        while not self.stopped():
+            event, data = await asyncio.to_thread(self.inqueue.get)
+            print(event, data)
+            if event is not None:
+                await sio.emit(event, data)
+
+    def write(self, data):
+        self.inqueue.put(data)
+
+    def flush(self):
+        pass
+
+class SocketMonitor(TimedUpdate):
+
+    def __init__(self, queue: Queue, progress=60, improvement=1) -> None:
+        super().__init__(progress=progress, improvement=improvement)
+
+        self.queue = queue
+
+    def config_history(self, history):
+        history.requires(time=1, value=1, point=1, step=1)
+
+    #def __call__(self, history):
+    #    record = {'step': history.step[0], 'value': history.value[0]}
+    #    self.queue.put(('fit_update', record))
+    def show_improvement(self, history):
+        record = f'step {history.step[0]} cost {history.value[0]:0.4f}'
+        self.queue.put(('fit_update', record))
+
+    def show_progress(self, history):
+        pass
+
+class QueueMonitor:
+
+    def __init__(self, data_queue: Queue, monitor_queue: Queue) -> None:
+        
+        self.data_queue = data_queue
+        self.monitor_queue = monitor_queue
+
+    def update(self):
+
+        data: List[List[List[MeasurementPoint]]] = self.data_queue.queue
+        queue_data = dict()
+        for plistlist in data:
+            for plist in plistlist:
+                for i, pt in enumerate(plist):
+                    queue_data[f'point_{pt.step_id}_{pt.point_id}_{i}'] = repr(pt.base)
+
+        self.monitor_queue.put(('queue_update', queue_data))
+
+
+def update_measurement_queue(signals: Signaller):
+    
+    #print('queue_update', {'queue': [asdict(pt) for ptlistlist in signals.measurement_queue.queue for ptlist in ptlistlist for pt in ptlist]})
+    fut = asyncio.run_coroutine_threadsafe(sio.emit('queue_update', {'queue': signals.measurement_queue.queue}), asyncio.get_event_loop())
+    fut.result()
+
+if __name__=='__main__':
+
+    signals = Signaller()
+    #signals.measurement_queue.put('hello')
+    s = SocketServer(daemon=False)
+    s.start()
+    time.sleep(2)
+    if False:
+        s.inqueue.put(('fit_update', 'hello'))
+        time.sleep(10)
+        s.inqueue.put(('fit_update', 'hello2'))
+        time.sleep(10)
+        s.inqueue.put(('fit_update', 'hello3'))
+    else:
+        for i in range(200):
+            s.inqueue.put(('fit_update', i))
+            time.sleep(0.2)
+    s.stop()
+    s.join()

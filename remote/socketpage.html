@@ -1,0 +1,123 @@
+<head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script type="module">
+        import { io } from "https://cdn.socket.io/4.7.4/socket.io.esm.min.js";
+
+        const socket = io();
+
+        function clear() {
+            $("#fit_progress").empty()
+            $("#queue_text").text("")
+        }
+
+        socket.on("connect", function () {
+            $("#suptitle").text("Connected")
+                         .addClass("titletext-connected")
+                         .removeClass("titletext-disconnected")
+            clear()
+        })
+
+        socket.on("disconnect", function () {
+            $("#suptitle").text('Disconnected')
+                         .removeClass("titletext-connected")
+                         .addClass("titletext-disconnected")
+            console.log('Disconnected')
+        })
+
+        socket.on("queue_update", data => {
+            $("#queue_text .measurement-pending").addClass("measurement-skipped").removeClass(".measurement-pending");
+            $("#queue_text").prepend('<hr>')
+            Object.keys(data).reverse().forEach(k => {
+                $('<div id="' + k + '" class="measurement-pending">' + data[k] + '</div>').prependTo($("#queue_text"))
+            });
+        })
+
+        socket.on("set_current_measurement", data => {
+            $("#queue_text .measurement-current").addClass("measurement-done").removeClass("measurement-current");
+            $('#' + data).addClass("measurement-current").removeClass("measurement-pending")
+        })
+
+        socket.on("clear", data => {
+            //console.log(data)
+            clear()
+        })
+
+        socket.on("fit_update", data => {
+            //console.log(data)
+            $("#fit_progress").text(function (i, orgdata) {
+                                        //console.log("Original data: " + orgdata)
+                                        return orgdata + data + "\n"
+                                    })
+        })
+
+    </script>
+    <style>
+        div {
+            white-space: pre-wrap;
+        }
+        .titletext {
+            font-size: large;
+        }
+        .titletext-connected {
+            color: green
+        }
+        .titletext-disconnected {
+            color: red
+        }
+        .measurement-current {
+            color: green
+        }
+        .measurement-skipped {
+            text-decoration: line-through;
+            color: grey
+        }
+        .measurement-pending {
+            color: black
+        }
+        .measurement-done {
+            color: chocolate
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(2, [col] auto );
+            grid-template-rows: repeat(2, [row] auto  );
+            grid-gap: 20px;
+        }
+        .grid-title {
+            height: 5vh;
+            grid-column: col / span 2;
+            grid-row: row;
+        }
+        .grid-fit-progress {
+            height: 5vh;
+            grid-column: col;
+            grid-row: row 2;
+        }
+        .grid-fit-progress-text {
+            overflow-y: auto;
+            min-height: 80vh;
+            max-height: 80vh;
+        }
+        .grid-queue {
+            grid-column: col 2;
+            grid-row: row 2;
+        }
+    </style>
+</head>
+<body>
+    <div class="grid-container">
+        <div id="suptitle" class="grid-title titletext titletext-disconnected">
+            Disconnected
+        </div>
+        <div id="fit_progress_container" class="grid-fit-progress">
+            <div id="fit_progress_title" class="titletext"><b>Fit Progress</b></div>
+            <div id="fit_progress" class="grid-fit-progress-text"></div>
+        </div>
+    
+        <div id="queue" class="grid-queue green">
+            <div id="queue_title" class="titletext"><b>Measurement Queue</b></div>
+            <div id="queue_text" class="grid-fit-progress-text"></div>
+        </div>
+      
+    </div>
+</body>
