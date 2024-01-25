@@ -147,7 +147,7 @@ class AutoReflBase(object):
 
 # calculate initial MVN entropy in the problem
         self.entropy_options = {**default_entropy_options, **entropy_options}
-        self.thinning = int(self.fit_options['steps']*0.8)
+        self.thinning = int(self.fit_options['steps']*0.2)
         self.init_entropy, _, _ = calc_init_entropy(problem, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
         self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
 

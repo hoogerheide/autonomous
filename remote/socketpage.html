@@ -4,10 +4,19 @@
         import { io } from "https://cdn.socket.io/4.7.4/socket.io.esm.min.js";
 
         const socket = io();
+        var current_step_progress;
 
         function clear() {
-            $("#fit_progress").empty()
-            $("#queue_text").text("")
+            $("#fit_progress").empty();
+            $("#queue_text").empty();
+            new_step('init', '')
+        }
+
+        function new_step(stepnum, text) {
+            let current_step = $("<div id=step_" + stepnum + " class='fit-step'></div>").text(text);
+            current_step_progress = $("<div id=step_" + stepnum + "_progress class='fit-step-progress grid-fit-progress-text'></div>");
+            current_step.append(current_step_progress);
+            $("#fit_progress").prepend(current_step);
         }
 
         socket.on("connect", function () {
@@ -25,7 +34,7 @@
         })
 
         socket.on("queue_update", data => {
-            $("#queue_text .measurement-pending").addClass("measurement-skipped").removeClass(".measurement-pending");
+            $("#queue_text .measurement-pending").addClass("measurement-skipped").removeClass("measurement-pending");
             $("#queue_text").prepend('<hr>')
             Object.keys(data).reverse().forEach(k => {
                 $('<div id="' + k + '" class="measurement-pending">' + data[k] + '</div>').prependTo($("#queue_text"))
@@ -34,7 +43,7 @@
 
         socket.on("set_current_measurement", data => {
             $("#queue_text .measurement-current").addClass("measurement-done").removeClass("measurement-current");
-            $('#' + data).addClass("measurement-current").removeClass("measurement-pending")
+            $('#' + data).addClass("measurement-current").removeClass("measurement-pending measurement-skipped")
         })
 
         socket.on("clear", data => {
@@ -42,14 +51,23 @@
             clear()
         })
 
+        socket.on("new_step", data => {
+            $("#fit_progress .fit-step-progress").addClass("fit-inactive")
+            $("#fit_progress").prepend("<hr>")
+            new_step(data['step'], data['text'])
+        })
+
         socket.on("fit_update", data => {
             //console.log(data)
-            $("#fit_progress").text(function (i, orgdata) {
+            current_step_progress.text(function (i, orgdata) {
                                         //console.log("Original data: " + orgdata)
-                                        return orgdata + data + "\n"
+                                        return data + "\n" + orgdata
                                     })
         })
 
+        $(document).ready(function () {
+            clear()
+        })
     </script>
     <style>
         div {
@@ -64,10 +82,22 @@
         .titletext-disconnected {
             color: red
         }
+        .fit-step {
+            color: blue
+        }        
+        .fit-step-progress {
+            color: purple
+        }        
+        .fit-inactive {
+            color: rgb(128, 128, 128)
+        }
         .measurement-current {
+            font-weight: bold;
             color: green
         }
         .measurement-skipped {
+            text-decoration: line-through;
+            text-decoration-color: rgb(128, 128, 128);
             color: rgb(128, 128, 128);
         }
         .measurement-pending {
@@ -87,15 +117,19 @@
             grid-column: col / span 2;
             grid-row: row;
         }
-        .grid-fit-progress {
-            height: 5vh;
+        .grid-fit {
             grid-column: col;
             grid-row: row 2;
         }
+        .grid-progress {
+            overflow-y: auto;
+            min-height: 65vh;
+            max-height: 65vh;
+        }
         .grid-fit-progress-text {
             overflow-y: auto;
-            min-height: 80vh;
-            max-height: 80vh;
+            min-height: 5vh;
+            max-height: 20vh;
         }
         .grid-queue {
             grid-column: col 2;
@@ -108,14 +142,14 @@
         <div id="suptitle" class="grid-title titletext titletext-disconnected">
             Disconnected
         </div>
-        <div id="fit_progress_container" class="grid-fit-progress">
+        <div id="fit_progress_container" class="grid-fit">
             <div id="fit_progress_title" class="titletext"><b>Fit Progress</b></div>
-            <div id="fit_progress" class="grid-fit-progress-text"></div>
+            <div id="fit_progress" class="grid-progress"></div>
         </div>
     
         <div id="queue" class="grid-queue green">
             <div id="queue_title" class="titletext"><b>Measurement Queue</b></div>
-            <div id="queue_text" class="grid-fit-progress-text"></div>
+            <div id="queue_text" class="grid-progress"></div>
         </div>
       
     </div>

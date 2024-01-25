@@ -20,15 +20,19 @@ from autorefl.autorefl import AutoReflExperiment
 
 class KeyboardInput(StoppableThread):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, signals: Signaller, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
+
+        self.signals = signals
+
     def run(self):
         while not self.stopped():
             cmd = input()
 
             if cmd == 'stop':
                 break
+            elif cmd == 'stopfit':
+                self.signals.measurement_queue_empty.set()
             else:
                 print(f'{cmd} not recognized')
 
@@ -94,7 +98,7 @@ class AutoReflLauncher(StoppableThread):
             # Add empty step
             self.exp.add_step([])
 
-            socketserver.write(('fit_update', 'Step: %i, Total time so far: %0.1f' % (k, total_t)))
+            socketserver.write(('new_step', {'step': k, 'text': 'Step: %i, Total time so far: %0.1f' % (k, total_t)}))
             print('AutoLauncher: Step: %i, Total time so far: %0.1f' % (k, total_t))
 
             # create data placeholder (TODO: replace with set_default)
@@ -119,7 +123,8 @@ class AutoReflLauncher(StoppableThread):
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
                 stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
                 #stop_fit_criterion = lambda: self.stopped()
-                monitors = [ConsoleMonitor(self.exp.problem), SocketMonitor(socketserver.inqueue)]
+                #monitors = [ConsoleMonitor(self.exp.problem), SocketMonitor(self.exp.problem, socketserver.inqueue)]
+                monitors = [SocketMonitor(self.exp.problem, socketserver.inqueue)]
                 self.exp.fit_step(abort_test=stop_fit_criterion, monitors=monitors)
 
                 socketserver.write(('fit_update', 'Final chi-squared: '+ self.exp.steps[-1].final_chisq))
@@ -141,12 +146,13 @@ class AutoReflLauncher(StoppableThread):
             self.exp.save(self.pathname + '/autoexp0.pickle')
 
             # update total time and step number
-            total_t += self.exp.steps[-1].meastime() + self.exp.steps[-1].movetime()
+            
+            total_t = sum(pt.t + pt.movet for step in exp.steps for pt in step.points)
             k += 1
 
 
         # also signals measurementhandler to stop
-        self.measurementhandler.stop()
+
         api.end_serve()
         api.disconnect()
         socketserver.stop()
@@ -167,6 +173,7 @@ class AutoReflLauncher(StoppableThread):
     def stop(self):
         print('AutoReflHandler: stopping')
         super().stop()
+        self.measurementhandler.stop()
 
 if __name__ == '__main__':
 
@@ -203,7 +210,7 @@ if __name__ == '__main__':
     measQ = (qmin-qstep) + np.cumsum(dq)
     #measQ = [m.fitness.probe.Q for m in model.models]
 
-    exp = AutoReflExperiment('test', model, measQ, instr, bestpars=bestp, meas_bkg=3e-6, eta=0.5, npoints=6, select_pars=sel, min_meas_time=10.0, fit_options={'burn': 1000, 'steps': 500, 'pop': 8})
+    exp = AutoReflExperiment('test', model, measQ, instr, bestpars=bestp, meas_bkg=3e-6, eta=0.5, npoints=6, select_pars=sel, min_meas_time=20.0, fit_options={'burn': 1000, 'steps': 100, 'pop': 8})
     if instr.name == 'MAGIK':
         exp.x = exp.measQ
     elif instr.name == 'CANDOR':
@@ -223,7 +230,7 @@ if __name__ == '__main__':
 
 
     autolauncher = AutoReflLauncher(exp, signaller, 7200, use_simulated_data=True, cli_args={'name': 'testauto'})
-    kinput = KeyboardInput()
+    kinput = KeyboardInput(signaller)
 
     print("launching")
     autolauncher.start()

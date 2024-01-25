@@ -484,6 +484,7 @@ class MeasurementHandler(Task):
         if self.active_count is not None:
             if not self.active_count.isFinished():
                 self.api.terminateCount()        
+        self.signals.measurement_queue.empty()
         self.signals.measurement_queue_updated.set()
         self.signals.first_measurement_complete.set()
 

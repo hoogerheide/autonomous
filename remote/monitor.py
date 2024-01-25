@@ -7,6 +7,8 @@ import socketio
 from queue import Queue
 from dataclasses import asdict
 from bumps.monitor import TimedUpdate
+from bumps.fitproblem import nllf_scale
+from bumps.formatnum import format_uncertainty
 from remote.nicedata import Signaller
 from remote.util import StoppableThread
 from autorefl.datastruct import MeasurementPoint
@@ -63,10 +65,11 @@ class SocketServer(StoppableThread):
 
 class SocketMonitor(TimedUpdate):
 
-    def __init__(self, queue: Queue, progress=60, improvement=1) -> None:
+    def __init__(self, problem, queue: Queue, progress=1, improvement=60) -> None:
         super().__init__(progress=progress, improvement=improvement)
 
         self.queue = queue
+        self.problem = problem
 
     def config_history(self, history):
         history.requires(time=1, value=1, point=1, step=1)
@@ -75,11 +78,15 @@ class SocketMonitor(TimedUpdate):
     #    record = {'step': history.step[0], 'value': history.value[0]}
     #    self.queue.put(('fit_update', record))
     def show_improvement(self, history):
-        record = f'step {history.step[0]} cost {history.value[0]:0.4f}'
-        self.queue.put(('fit_update', record))
+        pass
+        #record = f'step {history.step[0]} cost {history.value[0]:0.4f}'
+        #self.queue.put(('fit_update', record))
 
     def show_progress(self, history):
-        pass
+        scale, err = nllf_scale(self.problem)
+        chisq = format_uncertainty(scale*history.value[0], err)
+        record = f'step {history.step[0]} cost {chisq}'
+        self.queue.put(('fit_update', record))
 
 class QueueMonitor:
 
