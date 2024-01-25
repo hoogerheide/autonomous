@@ -5,7 +5,6 @@ import asyncio
 from aiohttp import web
 import socketio
 from queue import Queue
-from dataclasses import asdict
 from bumps.monitor import TimedUpdate
 from bumps.fitproblem import nllf_scale
 from bumps.formatnum import format_uncertainty
@@ -16,12 +15,22 @@ from autorefl.datastruct import MeasurementPoint
 sio = socketio.AsyncServer(async_mode='aiohttp')
 app = web.Application()
 sio.attach(app)
+socketlock: asyncio.Lock = asyncio.Lock()
+sockethistory: list = []
 
 async def hello(request):
     #return web.Response(text="Hello, world")
     return web.FileResponse('remote/socketpage.html')
 
 app.add_routes([web.get('/', hello)])
+
+@sio.on('connect')
+async def dump_history(sid, data):
+    print(f'New connection from {sid}')
+    async with socketlock:
+        for item in sockethistory:
+            #print(item)
+            await sio.emit(*item, to=sid)
 
 class SocketServer(StoppableThread):
 
@@ -55,7 +64,9 @@ class SocketServer(StoppableThread):
             event, data = await asyncio.to_thread(self.inqueue.get)
             print(event, data)
             if event is not None:
-                await sio.emit(event, data)
+                async with socketlock:
+                    await sio.emit(event, data)
+                    sockethistory.append((event, data))
 
     def write(self, data):
         self.inqueue.put(data)
@@ -98,11 +109,19 @@ class QueueMonitor:
     def update(self):
 
         data: List[List[List[MeasurementPoint]]] = self.data_queue.queue
-        queue_data = dict()
+        queue_data = []
         for plistlist in data:
             for plist in plistlist:
                 for i, pt in enumerate(plist):
-                    queue_data[f'point_{pt.step_id}_{pt.point_id}_{i}'] = repr(pt.base)
+                    queue_item = {'step_id': pt.step_id,
+                                  'point_id': pt.point_id,
+                                  'point_index': i,
+                                  'model': pt.base.model,
+                                  'x': f'{pt.base.x:0.4f}',
+                                  'intent': pt.base.intent,
+                                  'time': f'{pt.base.t:0.1f}'
+                                  }
+                    queue_data.append(queue_item)
 
         self.monitor_queue.put(('queue_update', queue_data))
 
