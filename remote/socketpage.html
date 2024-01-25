@@ -23,7 +23,7 @@
             $("#suptitle").text("Connected")
                          .addClass("titletext-connected")
                          .removeClass("titletext-disconnected")
-            clear()
+            //socket.emit('get_history', null)
         })
 
         socket.on("disconnect", function () {
@@ -35,10 +35,21 @@
 
         socket.on("queue_update", data => {
             $("#queue_text .measurement-pending").addClass("measurement-skipped").removeClass("measurement-pending");
-            $("#queue_text").prepend('<hr>')
-            Object.keys(data).reverse().forEach(k => {
-                $('<div id="' + k + '" class="measurement-pending">' + data[k] + '</div>').prependTo($("#queue_text"))
-            });
+            // Process queue data into table
+            const headerinfo = {'model': 'Model', 'x': 'x', 'intent': 'Intent', 'time': 'Time'}
+            var header = $('<tr>')
+            Object.values(headerinfo).forEach(v => {
+                header.append($('<th>').text(v))
+            })
+            var newtable = $('<table class="queue-table">').append(header)
+            Object.values(data).forEach(q => {
+                var newrow = $('<tr id=point_' + q['step_id'] + '_' + q['point_id'] + '_' + q['point_index'] + ' class="measurement-pending">')
+                Object.keys(headerinfo).forEach(k => {
+                    newrow.append($('<td>').text(q[k]))
+                })
+                newtable.append(newrow)
+            })
+            $("#queue_text").prepend(newtable)
         })
 
         socket.on("set_current_measurement", data => {
@@ -52,8 +63,8 @@
         })
 
         socket.on("new_step", data => {
-            $("#fit_progress .fit-step-progress").addClass("fit-inactive")
-            $("#fit_progress").prepend("<hr>")
+            $("#fit_progress .fit-step-progress").addClass("fit-inactive").removeClass("fit-step-progress")
+            //$("#fit_progress").prepend("<hr>")
             new_step(data['step'], data['text'])
         })
 
@@ -71,7 +82,27 @@
     </script>
     <style>
         div {
+            font-family: sans-serif;
             white-space: pre-wrap;
+        }
+        .queue-table {
+            border-collapse: collapse;
+            border: 2px solid black;
+            background-color: white;
+            width: 100%;
+            padding: 8px;
+            margin: 8px;
+        }
+        tr {
+            border: 1px solid black;
+        }
+        td {
+            border: 1px solid black;
+        }
+        th {
+            background-color: rgb(67, 140, 104);
+            color:white;
+            border: 1px solid black;
         }
         .titletext {
             font-size: large;
@@ -83,17 +114,32 @@
             color: red
         }
         .fit-step {
-            color: blue
+            border-radius: 10px;
+            border: 2px solid steelblue;
+            background-color: rgb(229, 242, 252);
+            margin: 10px;
+            padding: 10px;
+            /*color: blue*/
         }        
         .fit-step-progress {
-            color: purple
+            background-color: lightsteelblue;
+            border-radius: 10px;
+            border: 2px solid steelblue;
+            margin: 10px;
+            padding: 10px;
+            /*color: purple*/
         }        
         .fit-inactive {
-            color: rgb(128, 128, 128)
+            background-color: lightgrey;
+            border-radius: 10px;
+            border: 2px solid grey;
+            margin: 10px;
+            padding: 10px;
         }
         .measurement-current {
             font-weight: bold;
-            color: green
+            color: green;
+            border: 2px solid green;
         }
         .measurement-skipped {
             text-decoration: line-through;
@@ -126,6 +172,12 @@
             min-height: 65vh;
             max-height: 65vh;
         }
+        .grid-progress-queue {
+            border: 2px solid green;
+            border-radius: 10px;
+            background-color: rgb(209, 250, 230);
+            padding: 20px
+        }
         .grid-fit-progress-text {
             overflow-y: auto;
             min-height: 5vh;
@@ -149,7 +201,7 @@
     
         <div id="queue" class="grid-queue green">
             <div id="queue_title" class="titletext"><b>Measurement Queue</b></div>
-            <div id="queue_text" class="grid-progress"></div>
+            <div id="queue_text" class="grid-progress grid-progress-queue"></div>
         </div>
       
     </div>
