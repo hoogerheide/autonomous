@@ -25,6 +25,11 @@ async def hello(request):
 app.add_routes([web.get('/', hello)])
 app.add_routes([web.static('/lib', 'remote/lib')])
 
+async def emit_history(event, data, sid=None):
+    async with socketlock:
+        await sio.emit(event, data, to=sid)
+        sockethistory.append((event, data))
+
 @sio.on('connect')
 async def dump_history(sid, data):
     print(f'New connection from {sid}')
@@ -65,9 +70,7 @@ class SocketServer(StoppableThread):
             event, data = await asyncio.to_thread(self.inqueue.get)
             print(event, data)
             if event is not None:
-                async with socketlock:
-                    await sio.emit(event, data)
-                    sockethistory.append((event, data))
+                await emit_history(event, data)
 
     def write(self, data):
         self.inqueue.put(data)
@@ -126,6 +129,46 @@ class QueueMonitor:
 
         self.monitor_queue.put(('queue_update', queue_data))
 
+class ButtonHandler:
+
+    def __init__(self):
+        
+        self.stop_callbacks = []
+        self.terminate_callbacks = []
+        self.start_callbacks = []
+
+    def stop(self):
+
+        for callback in self.stop_callbacks:
+            callback()
+        
+    def terminateCount(self):
+
+        for callback in self.terminate_callbacks:
+            callback()
+
+    def start(self):
+
+        for callback in self.start_callbacks:
+            callback()
+
+buttonhandler = ButtonHandler()
+
+@sio.on('start')
+async def start(sid, data):
+    await emit_history('start_received', None)
+    buttonhandler.start()
+
+@sio.on('terminate')
+async def terminate(sid, data):
+    await emit_history('terminate_received', None)
+    buttonhandler.terminateCount()
+
+@sio.on('stop')
+async def stop(sid, data):
+    await emit_history('stop_received', None)
+    buttonhandler.stop()
+
 
 def update_measurement_queue(signals: Signaller):
     
@@ -139,7 +182,7 @@ if __name__=='__main__':
     #signals.measurement_queue.put('hello')
     s = SocketServer(daemon=False)
     s.start()
-    time.sleep(10)
+    time.sleep(20)
     """if False:
         s.inqueue.put(('fit_update', 'hello'))
         time.sleep(10)

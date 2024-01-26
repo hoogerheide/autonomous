@@ -34,6 +34,8 @@
             $("#connect_monitor").text('Disconnected')
                          .removeClass("titletext-connected")
                          .addClass("titletext-disconnected")
+            $("#btnStart").removeClass("btn-disabled")
+            $("#btnStart").prop('disabled', false)
             //console.log('Disconnected')
         })
 
@@ -75,6 +77,24 @@
         socket.on("fit_update", data => {
             //console.log(data)
             current_step_progress.prepend(data + "<br>")
+        })
+
+        // When buttons clicked, send message; do things as needed with response
+        $("#btnStart").on('click', function () {
+            socket.emit('start', null);
+        })
+
+        socket.on("start_received", data => {
+            $("#btnStart").prop('disabled', true)
+            $("#btnStart").addClass("btn-disabled")
+        })
+
+        $("#btnTerminate").on('click', function () {
+            socket.emit('terminate', null);
+        })
+
+        $("#btnStop").on('click', function () {
+            socket.emit('stop', null);
         })
 
         var CB_color_cycle = ['#377eb8', '#ff7f00', '#4daf4a',
@@ -186,7 +206,7 @@
                 paper_bgcolor:"#FFFFFF00",
                 datarevision: true
             }}
-            Plotly.react('plot', traces, layout)
+            Plotly.newPlot('plot', traces, layout)
         })
 
         $(document).ready(function () {
@@ -286,7 +306,7 @@
             box-sizing: border-box;
             display: grid;
             grid-template-columns: [col0] minmax(0, 1fr) [col1] minmax(0, 2fr);
-            grid-template-rows: [row0] minmax(0, 1fr) [row1] minmax(0, 12fr) [row2] minmax(0, 6fr);
+            grid-template-rows: [row0] minmax(0, 1fr) [row1] minmax(0, 6fr) [row2] minmax(0, 3fr);
             grid-gap: 20px;
             height: 95%;
         }
@@ -350,6 +370,29 @@
             height:100%;
             width:100%
         }
+        .btn {
+            margin-left: 10px;
+            padding: 5px;
+            border-radius: 5px;
+            min-width: 30%;
+            font-stretch: narrower;
+        }
+        .btn-disabled {
+            background-color: gray !important;
+        }
+        #btnStart {
+            color: white;
+            background-color: rgb(71, 130, 71);
+            border-radius: 5px;
+        }
+        #btnStop {
+            color: white;
+            background-color: rgb(180, 92, 92);
+        }
+        #btnTerminate {
+            background-color: rgb(206, 200, 143);
+        }
+
     </style>
 </head>
 <body>
@@ -357,8 +400,15 @@
         <div class="grid-title bigtitletext">
             <em>AutoRefl</em> Monitor
         </div>
-        <div id="connect_monitor" class="grid-title-right monitortext titletext-disconnected">
-            Disconnected
+        <div class="grid-title-right">
+            <div id="connect_monitor" class="monitortext titletext-disconnected">
+                Disconnected
+            </div>
+            <div id="queue_buttons" class="titletext margin:5px">
+                <button id="btnStart" class="btn">Start</button>
+                <button id="btnTerminate" class="btn">Terminate Count</button>
+                <button id="btnStop" class="btn">Stop</button>
+            </div>
         </div>
         <div id="fit_progress_container" class="grid-fit">
             <div id="fit_progress_title" class="titletext">Fit Progress</div>

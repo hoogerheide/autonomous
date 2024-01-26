@@ -14,7 +14,7 @@ import nice.remote
 
 from remote.util import StoppableThread
 from remote.nicedata import Signaller, blocking, MeasurementHandler
-from remote.monitor import SocketMonitor, SocketServer, QueueMonitor
+from remote.monitor import SocketMonitor, SocketServer, QueueMonitor, buttonhandler
 from bumps.fitters import ConsoleMonitor
 
 from autorefl.autorefl import AutoReflExperiment
@@ -68,26 +68,34 @@ class AutoReflLauncher(StoppableThread):
         socketserver = SocketServer()
         socketserver.start()
         queuemonitor = QueueMonitor(self.signals.measurement_queue, socketserver.inqueue)
+
+        # register callbacks
         self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('set_current_measurement', data)))
         self.measurementhandler.publish_callbacks.append(lambda data: self._update_data())
         self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('update_plot', self.update_plot_data())))
+
         #fitmonitor = SocketMonitor(socketserver.inqueue)
 
         api = nice.remote.connect('localhost', 'AutoRefl')
         api.run_task(self.measurementhandler, wait=False)
-        
+
+        # register api callbacks
+        buttonhandler.start_callbacks.append(self.signals.global_start.set)
+        buttonhandler.stop_callbacks.append(self.stop)
+        buttonhandler.terminate_callbacks.append(api.terminateCount)
+
 #        print(self.measurementhandler.name)
 #        t1 = threading.Thread(target=lambda: api.run_task(self.measurementhandler), daemon=True)
 #        t1.start()
-
-        # wait for global start
-        # TODO: set to a Barrier that all child threads need to cross.
-        self.signals.global_start.set()
-        self.signals.first_measurement_complete.set()
-
+        
         # clear fit output
         time.sleep(1)
         socketserver.write(('clear', None))
+
+        # wait for global start
+        # TODO: set to a Barrier that all child threads need to cross.
+        self.signals.global_start.wait()
+        self.signals.first_measurement_complete.set()
 
         # start measurement
         print('AutoLauncher: starting measurement')
@@ -215,6 +223,7 @@ class AutoReflLauncher(StoppableThread):
     def stop(self):
         print('AutoReflHandler: stopping')
         super().stop()
+        self.signals.global_start.set()
         self.measurementhandler.stop()
 
 if __name__ == '__main__':
@@ -286,9 +295,9 @@ if __name__ == '__main__':
 
     print("launching")
     autolauncher.start()
-    kinput.start()
-    kinput.join()
+    #kinput.start()
+    #kinput.join()
     # wait for stop signal from keyboard (just type "stop")
-    print('stop signal issued via keyboard')
-    autolauncher.stop()
+    #print('stop signal issued via keyboard')
+    #autolauncher.stop()
     autolauncher.join()
