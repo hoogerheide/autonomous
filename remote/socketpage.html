@@ -11,18 +11,20 @@
         function clear() {
             $("#fit_progress").empty();
             $("#queue_text").empty();
-            new_step('init', '')
+            reset_plotdata()
+            Plotly.purge('plot')
+            new_step('init', 'Initialization')
         }
 
         function new_step(stepnum, text) {
-            let current_step = $("<div id=step_" + stepnum + " class='fit-step'></div>").text(text);
+            //let current_step = $("<div id=step_" + stepnum + " class='fit-step'></div>").text(text);
             current_step_progress = $("<div id=step_" + stepnum + "_progress class='fit-step-progress grid-fit-progress-text'></div>");
-            current_step.append(current_step_progress);
-            $("#fit_progress").prepend(current_step);
+            //current_step.append(current_step_progress);
+            $("#fit_progress").prepend(current_step_progress).prepend(text + "<br>");
         }
 
         socket.on("connect", function () {
-            $("#connect_monitor").text("Connected")
+            $("#connect_monitor").text("Connected to " + this.io.uri.split('//')[1])
                          .addClass("titletext-connected")
                          .removeClass("titletext-disconnected")
             //socket.emit('get_history', null)
@@ -181,16 +183,20 @@
                     autoexpand: true
                 },
                 plot_bgcolor:"#FFFFFF44",
-                paper_bgcolor:"#FFFFFF00"
-
+                paper_bgcolor:"#FFFFFF00",
+                datarevision: true
             }}
-            Plotly.newPlot('plot', traces, layout)
+            Plotly.react('plot', traces, layout)
         })
 
         $(document).ready(function () {
             clear()
-            reset_plotdata()
         })
+
+        window.onresize = function() {
+            Plotly.Plots.resize('plot');
+        };
+
     </script>
     <style>
         div {
@@ -356,7 +362,9 @@
         </div>
         <div id="fit_progress_container" class="grid-fit">
             <div id="fit_progress_title" class="titletext">Fit Progress</div>
-            <div id="fit_progress" class="grid-progress"></div>
+            <div class="grid-progress">
+                <div id="fit_progress" class="fit-step"></div>
+            </div>
         </div>
         <div id="plot_container" class="grid-plot">
             <div id="plot_progress_title" class="titletext">Real Time Plot</div>
