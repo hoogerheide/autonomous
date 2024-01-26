@@ -22,14 +22,14 @@
         }
 
         socket.on("connect", function () {
-            $("#suptitle").text("Connected")
+            $("#connect_monitor").text("Connected")
                          .addClass("titletext-connected")
                          .removeClass("titletext-disconnected")
             //socket.emit('get_history', null)
         })
 
         socket.on("disconnect", function () {
-            $("#suptitle").text('Disconnected')
+            $("#connect_monitor").text('Disconnected')
                          .removeClass("titletext-connected")
                          .addClass("titletext-disconnected")
             //console.log('Disconnected')
@@ -72,10 +72,7 @@
 
         socket.on("fit_update", data => {
             //console.log(data)
-            current_step_progress.text(function (i, orgdata) {
-                                        //console.log("Original data: " + orgdata)
-                                        return data + "\n" + orgdata
-                                    })
+            current_step_progress.prepend(data + "<br>")
         })
 
         var CB_color_cycle = ['#377eb8', '#ff7f00', '#4daf4a',
@@ -94,7 +91,7 @@
                         visible: true
                     },
                     line: {
-                        color: color_cycle[idx]
+                        color: CB_color_cycle[idx]
                     },
                     showlegend: false,
                     mode: 'markers',
@@ -116,7 +113,7 @@
                     x: ptdata['x'],
                     y: ptdata['68']['upper'],
                     fill: 'tonexty',
-                    fillcolor: color_cycle[idx] + '44',
+                    fillcolor: CB_color_cycle[idx] + '44',
                     line: {
                         width: 0,
                     },
@@ -138,7 +135,7 @@
                     x: ptdata['x'],
                     y: ptdata['95']['upper'],
                     fill: 'tonexty',
-                    fillcolor: color_cycle[idx] + '44',
+                    fillcolor: CB_color_cycle[idx] + '44',
                     showlegend: false,
                     line: {
                         width: 0,
@@ -159,7 +156,7 @@
             plotdata = {...plotdata, ...newdata}
             //console.log(plotdata)
             var traces = makePlot(plotdata)
-            var layout = {'annotationdefaults': {'arrowcolor': '#2a3f5f', 'arrowhead': 0, 'arrowwidth': 1}, 'autotypenumbers': 'strict', 'coloraxis': {'colorbar': {'outlinewidth': 0, 'ticks': ''}}, 'colorscale': {'diverging': [[0, '#8e0152'], [0.1, '#c51b7d'], [0.2, '#de77ae'], [0.3, '#f1b6da'], [0.4, '#fde0ef'], [0.5, '#f7f7f7'], [0.6, '#e6f5d0'], [0.7, '#b8e186'], [0.8, '#7fbc41'], [0.9, '#4d9221'], [1, '#276419']], 'sequential': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']], 'sequentialminus': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']]}, 'colorway': ['#636efa', '#EF553B', '#00cc96', '#ab63fa', '#FFA15A', '#19d3f3', '#FF6692', '#B6E880', '#FF97FF', '#FECB52'], 'font': {'color': '#2a3f5f'}, 'geo': {'bgcolor': 'white', 'lakecolor': 'white', 'landcolor': 'white', 'showlakes': true, 'showland': true, 'subunitcolor': '#C8D4E3'}, 'hoverlabel': {'align': 'left'}, 'hovermode': 'closest', 'mapbox': {'style': 'light'}, 'paper_bgcolor': 'white', 'plot_bgcolor': 'white', 'polar': {'angularaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}, 'bgcolor': 'white', 'radialaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}}, 'scene': {'xaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'yaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'zaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}}, 'shapedefaults': {'line': {'color': '#2a3f5f'}}, 'ternary': {'aaxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'baxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'bgcolor': 'white', 'caxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}}, 'title': {'x': 0.05}, 'xaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}, 'yaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}}
+            var layout = {} //{'annotationdefaults': {'arrowcolor': '#2a3f5f', 'arrowhead': 0, 'arrowwidth': 1}, 'autotypenumbers': 'strict', 'coloraxis': {'colorbar': {'outlinewidth': 0, 'ticks': ''}}, 'colorscale': {'diverging': [[0, '#8e0152'], [0.1, '#c51b7d'], [0.2, '#de77ae'], [0.3, '#f1b6da'], [0.4, '#fde0ef'], [0.5, '#f7f7f7'], [0.6, '#e6f5d0'], [0.7, '#b8e186'], [0.8, '#7fbc41'], [0.9, '#4d9221'], [1, '#276419']], 'sequential': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']], 'sequentialminus': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']]}, 'colorway': ['#636efa', '#EF553B', '#00cc96', '#ab63fa', '#FFA15A', '#19d3f3', '#FF6692', '#B6E880', '#FF97FF', '#FECB52'], 'font': {'color': '#2a3f5f'}, 'geo': {'bgcolor': 'white', 'lakecolor': 'white', 'landcolor': 'white', 'showlakes': true, 'showland': true, 'subunitcolor': '#C8D4E3'}, 'hoverlabel': {'align': 'left'}, 'hovermode': 'closest', 'mapbox': {'style': 'light'}, 'paper_bgcolor': 'white', 'plot_bgcolor': 'white', 'polar': {'angularaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}, 'bgcolor': 'white', 'radialaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}}, 'scene': {'xaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'yaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'zaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}}, 'shapedefaults': {'line': {'color': '#2a3f5f'}}, 'ternary': {'aaxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'baxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'bgcolor': 'white', 'caxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}}, 'title': {'x': 0.05}, 'xaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}, 'yaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}}
             layout = {...layout, ...{
                 yaxis: {type: 'log',
                         showexponent: 'all',
@@ -170,7 +167,17 @@
                         }},
                 xaxis: {title: {
                             text: 'Q',
-                }}
+                }},
+                margin: {
+                    l: 50,
+                    b: 50,
+                    t: 25,
+                    r: 25,
+                    autoexpand: true
+                },
+                plot_bgcolor:"#FFFFFF44",
+                paper_bgcolor:"#FFFFFF00"
+
             }}
             Plotly.newPlot('plot', traces, layout)
         })
@@ -183,7 +190,8 @@
     <style>
         div {
             font-family: sans-serif;
-            white-space: pre-wrap;
+            box-sizing: border-box;
+            /*white-space: pre-wrap;*/
         }
         .queue-table {
             border-collapse: collapse;
@@ -204,8 +212,18 @@
             color:white;
             border: 1px solid black;
         }
+        .bigtitletext{
+            font-size: xx-large;
+        }
         .titletext {
             font-size: large;
+            font-weight: bolder;
+            text-align: center;
+        }
+        .monitortext {
+            font-size: large;
+            font-weight: bolder;
+            text-align: right;
         }
         .titletext-connected {
             color: green
@@ -253,28 +271,38 @@
             color: chocolate
         }
         .grid-container {
+            box-sizing: border-box;
             display: grid;
-            grid-template-columns: repeat(2, [col] auto );
-            grid-template-rows: repeat(3, [row] auto  );
+            grid-template-columns: [col0] minmax(0, 1fr) [col1] minmax(0, 2fr);
+            grid-template-rows: [row0] minmax(0, 1fr) [row1] minmax(0, 12fr) [row2] minmax(0, 6fr);
             grid-gap: 20px;
+            height: 95%;
         }
         .grid-title {
-            height: 5vh;
-            grid-column: col / span 2;
-            grid-row: row;
+            /*height: 5vh;*/
+            grid-column: col0;
+            grid-row: row0;
+        }
+        .grid-title-right {
+            grid-column: col1;
+            grid-row: row0;
         }
         .grid-fit {
-            grid-column: col;
-            grid-row: row 2;
+            grid-column: col0;
+            grid-row: row1 / span 2;
+            height: 100%
         }
         .grid-progress {
             overflow-y: auto;
-            min-height: 60vh;
-            max-height: 60vh;
+            height:100%
+            /*min-height: 60vh;
+            max-height: 60vh;*/
         }
         .grid-progress-queue {
             overflow-y: auto;
-            max-height: 65vh;
+            overflow-x: hidden;
+            /*max-height: 30vh;*/
+            height:100%;
             border: 2px solid green;
             border-radius: 10px;
             background-color: rgb(209, 250, 230);
@@ -282,34 +310,56 @@
         }
         .grid-fit-progress-text {
             overflow-y: auto;
-            min-height: 5vh;
-            max-height: 20vh;
+            min-height: 5%;
+            max-height: 40%;
         }
         .grid-queue {
-            grid-column: col 2;
-            grid-row: 2 / span 2;
+            grid-column: col1;
+            grid-row: row2;
+            /*height: 30vh*/
         }
         .grid-plot {
-            background-color: aquamarine;
-            grid-column: col;
-            grid-row: 3
+            grid-column: col1;
+            grid-row: row1;
+            /*height: 30vh;*/
+            /*width: 100%;*/
+        }
+        .plot-frame {
+            border-radius: 10px;
+            border: 2px solid rgb(107, 70, 180);
+            background-color: rgb(220, 206, 248);
+            margin: 0px;
+            padding: 10px;
+            height: 100%;
+            width: 100%
+        }
+        .plot {
+            overflow: hidden;
+            height:100%;
+            width:100%
         }
     </style>
 </head>
 <body>
     <div class="grid-container">
-        <div id="suptitle" class="grid-title titletext titletext-disconnected">
+        <div class="grid-title bigtitletext">
+            <em>AutoRefl</em> Monitor
+        </div>
+        <div id="connect_monitor" class="grid-title-right monitortext titletext-disconnected">
             Disconnected
         </div>
         <div id="fit_progress_container" class="grid-fit">
-            <div id="fit_progress_title" class="titletext"><b>Fit Progress</b></div>
+            <div id="fit_progress_title" class="titletext">Fit Progress</div>
             <div id="fit_progress" class="grid-progress"></div>
         </div>
         <div id="plot_container" class="grid-plot">
-            <div id="plot" class="grid-progress">Plot goes here</div>
+            <div id="plot_progress_title" class="titletext">Real Time Plot</div>
+            <div id="plot_frame" class="grid-progress plot-frame">
+                <div id="plot" class="plot"></div>
+            </div>
         </div>
         <div id="queue" class="grid-queue green">
-            <div id="queue_title" class="titletext"><b>Measurement Queue</b></div>
+            <div id="queue_title" class="titletext">Measurement Queue</div>
             <div id="queue_text" class="grid-progress-queue"></div>
         </div>
       
