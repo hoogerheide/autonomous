@@ -101,7 +101,7 @@ class AutoReflLauncher(StoppableThread):
         print('AutoLauncher: starting measurement')
         socketserver.write(('fit_update', 'Calculating initial points'))
         print('AutoLauncher: calculating initial points')
-        points = self.exp.initial_points()
+        points, init_qprofs = self.exp.initial_points()
         total_t = 0.0
         k = 0
 

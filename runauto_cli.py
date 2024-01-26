@@ -205,7 +205,7 @@ if __name__ == '__main__':
                         x = np.array(x)
                         exp.x[i] = x
 
-                points = exp.initial_points()
+                points, _ = exp.initial_points()
                 total_t = 0.0
                 k = 0
                 while total_t < args.maxtime:

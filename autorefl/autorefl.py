@@ -221,7 +221,7 @@ class AutoReflBase(object):
         #print(initpts.shape, init_qprof[0].shape, len(self.problem.labels()))
         points = self.take_step(initstep)
 
-        return points
+        return points, init_qprof
 
     def update_models(self) -> None:
         # Update the models in the fit problem with new data points. Should be run every time
