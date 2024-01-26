@@ -1,9 +1,9 @@
-from typing import List, Union, Dict
+from typing import List, Dict
 
 import time
-from threading import Event, Timer, Condition
-from remote.util import StoppableThread, NICEInteractor
-from queue import Queue, Empty, Full
+from threading import Event, Timer
+from remote.util import StoppableThread
+from queue import Queue, Empty
 
 # temp
 import numpy as np
@@ -14,10 +14,7 @@ from autorefl.datastruct import DataPoint, MeasurementPoint, Intent, data_attrib
 import sys
 from remote.nicepath import nicepath
 sys.path.append(nicepath)
-import nice
-import nice.datastream
-import nice.core
-import nice.writer
+
 from nice.remote import Task
 
 def blocking(func):
@@ -86,54 +83,6 @@ class Signaller:
         # Trajectory queue for storing new trajectory definitions (should not be needed)
         self.trajectory_queue = Queue()
 
-class DataListener(nice.datastream.NiceData):
-    """
-    Message processor for data stream.
-    """
-
-    def __init__(self, signals: Signaller) -> None:
-        self.signals = signals
-
-    def emit(self, message: bytes, current=None) -> None:
-        #script_api.consolePrint("Hello there!")
-        record = nice.writer.stream.loads(nice.writer.util.bytes_to_str(message))
-        #script_api.consolePrint(record.keys())
-        #print(message.decode()[:250])
-        #print(record['command'])
-        #print(f'DataListener: event_newdata {self.event_newdata.is_set()}')
-        if record['command'] == 'Counts':
-            self.signals.data_queue.put(record)
-            print(f'DataListener: setting new_data_acquired event')
-            print(record)
-            self.signals.new_data_acquired.set()
-        elif record['command'] == 'Open':
-            self.signals.trajectory_queue.put(record)
-            self.signals.new_trajectory_acquired.set()
-        #elif record['command'] == 'End'
-        #self.queue.put(record)
-
-class NiceDataListener(NICEInteractor):
-    """
-    NICE data stream listener.
-    Deprecated. Now part of MeasurementHandler
-    """
-
-    def __init__(self, signals: Signaller, host=None, port=None, *args, **kwargs):
-        super().__init__(host=host, port=port, *args, **kwargs)
-        self.signals = signals
-
-    def run(self):
-        # Connect to NICE
-        self.connect()
-
-        # Subscribe to data stream. All activity is handled in the DataListener.emit callback
-        self.api.subscribe('data', DataListener(self.signals))
-
-        # wait until thread is terminated
-        self._stop_event.wait()
-
-        # Disconnect
-        self.disconnect()
         
 class DataQueueListener(StoppableThread):
     """
@@ -215,40 +164,6 @@ class DataQueueListener(StoppableThread):
         # more than one event
         self.signals.new_data_acquired.set()
 
-# define end states
-end_states = [
-    nice.api.queue.CommandState.FINISHING,
-    nice.api.queue.CommandState.FINISHED,
-    nice.api.queue.CommandState.SKIPPED,
-]
-
-class StoppableNiceCounter(StoppableThread):
-
-    def __init__(self, api, filePrefix, entry, time, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.filePrefix = filePrefix
-        self.entry = entry
-        self.time = time
-        self.api = api
-        self.running = False
-
-    def run(self):
-
-        self.running = True
-
-        # Running count
-        if not self.stopped():
-            self.api.measurement_count(filePrefix=self.filePrefix,
-                                        entry=self.entry,
-                                        presetTime=self.time)
-        self.running = False
-
-    def stop(self):
-        super().stop()
-        if self.running:
-            print('Interrupting count!')
-            self.api.terminateCount()
-
 class MeasurementHandler(Task):
     """
     Threaded handler for measurement control
@@ -265,7 +180,7 @@ class MeasurementHandler(Task):
         self.active_count = None
         self.api_locked = False
         self.use_simulated_data = use_simulated_data
-        self.publish_callback = None
+        self.publish_callbacks = []
 
         self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
         self.filename = filename
@@ -282,8 +197,8 @@ class MeasurementHandler(Task):
         self._stop_event.clear()
 
     def publish(self, data):
-        if self.publish_callback is not None:
-            self.publish_callback(data)
+        for callback in self.publish_callbacks:
+            callback(data)
 
     def _get_current_list(self, step_id) -> list:
 
@@ -500,7 +415,6 @@ if __name__ == '__main__':
 
     signaller = Signaller()
 
-    datalistener = DataListener(signaller)
     #nicedata = NiceDataListener(data_queue=data_queue, event_newdata=event_newdata, event_ready=event_ready)
     queuedata = DataQueueListener(signaller)
 
