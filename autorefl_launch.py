@@ -10,7 +10,7 @@ import numpy as np
 
 from remote.nicepath import nicepath
 sys.path.append(nicepath)
-import nice.remote as nice_remote
+import nice.remote
 
 from remote.util import StoppableThread
 from remote.nicedata import Signaller, blocking, MeasurementHandler
@@ -68,11 +68,14 @@ class AutoReflLauncher(StoppableThread):
         socketserver = SocketServer()
         socketserver.start()
         queuemonitor = QueueMonitor(self.signals.measurement_queue, socketserver.inqueue)
-        self.measurementhandler.publish_callback = lambda data: socketserver.write(('set_current_measurement', data))
+        self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('set_current_measurement', data)))
+        self.measurementhandler.publish_callbacks.append(lambda data: self._update_data())
+        self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('update_plot', self.update_plot_data())))
         #fitmonitor = SocketMonitor(socketserver.inqueue)
 
-        api = nice_remote.connect('localhost', 'AutoRefl')
+        api = nice.remote.connect('localhost', 'AutoRefl')
         api.run_task(self.measurementhandler, wait=False)
+        
 #        print(self.measurementhandler.name)
 #        t1 = threading.Thread(target=lambda: api.run_task(self.measurementhandler), daemon=True)
 #        t1.start()
@@ -115,6 +118,9 @@ class AutoReflLauncher(StoppableThread):
             self.signals.measurement_queue_empty.clear()
             
             # need to wait for measurements to be acquired
+            # wait for new data to have been processed and added
+            self.signals.first_measurement_complete.wait()
+
             self._update_data()     # blocking, can be slow
 
             socketserver.write(('update_plot', self.update_plot_data()))
@@ -165,8 +171,6 @@ class AutoReflLauncher(StoppableThread):
     @blocking
     def _update_data(self) -> None:
         print('AutoLauncher: getting new data')
-        # wait for new data to have been processed and added
-        self.signals.first_measurement_complete.wait()
         
         # populate current step with new data
         #print(self.measurementhandler.data)
@@ -255,9 +259,10 @@ if __name__ == '__main__':
                              npoints=6,
                              select_pars=sel,
                              min_meas_time=20.0,
+                             oversampling=5,
                              fit_options={'burn': 1000,
                                           'steps': 100,
-                                          'pop': 4})
+                                          'pop': 8})
     if instr.name == 'MAGIK':
         exp.x = exp.measQ
     elif instr.name == 'CANDOR':
