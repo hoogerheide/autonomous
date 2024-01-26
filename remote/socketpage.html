@@ -1,10 +1,12 @@
 <head>
-    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="lib/jquery-3.7.1.min.js"></script>
+    <script src="lib/plotly-2.27.0.min.js" charset="utf-8"></script>
     <script type="module">
         import { io } from "https://cdn.socket.io/4.7.4/socket.io.esm.min.js";
 
         const socket = io();
         var current_step_progress;
+        var plotdata;
 
         function clear() {
             $("#fit_progress").empty();
@@ -30,7 +32,7 @@
             $("#suptitle").text('Disconnected')
                          .removeClass("titletext-connected")
                          .addClass("titletext-disconnected")
-            console.log('Disconnected')
+            //console.log('Disconnected')
         })
 
         socket.on("queue_update", data => {
@@ -76,8 +78,106 @@
                                     })
         })
 
+        var CB_color_cycle = ['#377eb8', '#ff7f00', '#4daf4a',
+                  '#f781bf', '#a65628', '#984ea3',
+                  '#999999', '#e41a1c', '#dede00']
+        
+        function makePlot(data) {
+            var traces = [];
+            Object.values(data['data']).forEach((ptdata, idx) => {
+                traces.push({
+                    x: ptdata['x'],
+                    y: ptdata['v'],
+                    error_y: {
+                        type: 'data',
+                        array: ptdata['dv'],
+                        visible: true
+                    },
+                    line: {
+                        color: color_cycle[idx]
+                    },
+                    showlegend: false,
+                    mode: 'markers',
+                    type: 'scatter'
+                })
+            })
+            Object.values(data['ci']).forEach((ptdata, idx) => {
+                traces.push({
+                    x: ptdata['x'],
+                    y: ptdata['68']['lower'],
+                    line: {
+                        width: 0,
+                    },
+                    showlegend: false,
+                    type: 'scatter',
+                    mode: 'lines'
+                });
+                traces.push({
+                    x: ptdata['x'],
+                    y: ptdata['68']['upper'],
+                    fill: 'tonexty',
+                    fillcolor: color_cycle[idx] + '44',
+                    line: {
+                        width: 0,
+                    },
+                    showlegend: false,
+                    type: 'scatter',
+                    mode: 'lines'
+                });
+                traces.push({
+                    x: ptdata['x'],
+                    y: ptdata['95']['lower'],
+                    showlegend: false,
+                    line: {
+                        width: 0,
+                    },
+                    type: 'scatter',
+                    mode: 'lines'
+                });
+                traces.push({
+                    x: ptdata['x'],
+                    y: ptdata['95']['upper'],
+                    fill: 'tonexty',
+                    fillcolor: color_cycle[idx] + '44',
+                    showlegend: false,
+                    line: {
+                        width: 0,
+                    },
+                    type: 'scatter',
+                    mode: 'lines'
+                });
+            })
+            return traces
+        }
+
+        function reset_plotdata() {
+            plotdata = {'data': [], 'ci': []};
+        };
+
+        socket.on("update_plot", data => {
+            let newdata = JSON.parse(data)
+            plotdata = {...plotdata, ...newdata}
+            //console.log(plotdata)
+            var traces = makePlot(plotdata)
+            var layout = {'annotationdefaults': {'arrowcolor': '#2a3f5f', 'arrowhead': 0, 'arrowwidth': 1}, 'autotypenumbers': 'strict', 'coloraxis': {'colorbar': {'outlinewidth': 0, 'ticks': ''}}, 'colorscale': {'diverging': [[0, '#8e0152'], [0.1, '#c51b7d'], [0.2, '#de77ae'], [0.3, '#f1b6da'], [0.4, '#fde0ef'], [0.5, '#f7f7f7'], [0.6, '#e6f5d0'], [0.7, '#b8e186'], [0.8, '#7fbc41'], [0.9, '#4d9221'], [1, '#276419']], 'sequential': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']], 'sequentialminus': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']]}, 'colorway': ['#636efa', '#EF553B', '#00cc96', '#ab63fa', '#FFA15A', '#19d3f3', '#FF6692', '#B6E880', '#FF97FF', '#FECB52'], 'font': {'color': '#2a3f5f'}, 'geo': {'bgcolor': 'white', 'lakecolor': 'white', 'landcolor': 'white', 'showlakes': true, 'showland': true, 'subunitcolor': '#C8D4E3'}, 'hoverlabel': {'align': 'left'}, 'hovermode': 'closest', 'mapbox': {'style': 'light'}, 'paper_bgcolor': 'white', 'plot_bgcolor': 'white', 'polar': {'angularaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}, 'bgcolor': 'white', 'radialaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}}, 'scene': {'xaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'yaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'zaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}}, 'shapedefaults': {'line': {'color': '#2a3f5f'}}, 'ternary': {'aaxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'baxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'bgcolor': 'white', 'caxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}}, 'title': {'x': 0.05}, 'xaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}, 'yaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}}
+            layout = {...layout, ...{
+                yaxis: {type: 'log',
+                        showexponent: 'all',
+                        exponentformat: 'power',
+                        autorange: true,
+                        title: {
+                            text: 'reflectivity',
+                        }},
+                xaxis: {title: {
+                            text: 'Q',
+                }}
+            }}
+            Plotly.newPlot('plot', traces, layout)
+        })
+
         $(document).ready(function () {
             clear()
+            reset_plotdata()
         })
     </script>
     <style>
@@ -117,7 +217,7 @@
             border-radius: 10px;
             border: 2px solid steelblue;
             background-color: rgb(229, 242, 252);
-            margin: 10px;
+            margin: 5px;
             padding: 10px;
             /*color: blue*/
         }        
@@ -125,7 +225,7 @@
             background-color: lightsteelblue;
             border-radius: 10px;
             border: 2px solid steelblue;
-            margin: 10px;
+            margin: 5px;
             padding: 10px;
             /*color: purple*/
         }        
@@ -155,7 +255,7 @@
         .grid-container {
             display: grid;
             grid-template-columns: repeat(2, [col] auto );
-            grid-template-rows: repeat(2, [row] auto  );
+            grid-template-rows: repeat(3, [row] auto  );
             grid-gap: 20px;
         }
         .grid-title {
@@ -169,14 +269,16 @@
         }
         .grid-progress {
             overflow-y: auto;
-            min-height: 65vh;
-            max-height: 65vh;
+            min-height: 60vh;
+            max-height: 60vh;
         }
         .grid-progress-queue {
+            overflow-y: auto;
+            max-height: 65vh;
             border: 2px solid green;
             border-radius: 10px;
             background-color: rgb(209, 250, 230);
-            padding: 20px
+            padding: 10px
         }
         .grid-fit-progress-text {
             overflow-y: auto;
@@ -185,7 +287,12 @@
         }
         .grid-queue {
             grid-column: col 2;
-            grid-row: row 2;
+            grid-row: 2 / span 2;
+        }
+        .grid-plot {
+            background-color: aquamarine;
+            grid-column: col;
+            grid-row: 3
         }
     </style>
 </head>
@@ -198,10 +305,12 @@
             <div id="fit_progress_title" class="titletext"><b>Fit Progress</b></div>
             <div id="fit_progress" class="grid-progress"></div>
         </div>
-    
+        <div id="plot_container" class="grid-plot">
+            <div id="plot" class="grid-progress">Plot goes here</div>
+        </div>
         <div id="queue" class="grid-queue green">
             <div id="queue_title" class="titletext"><b>Measurement Queue</b></div>
-            <div id="queue_text" class="grid-progress grid-progress-queue"></div>
+            <div id="queue_text" class="grid-progress-queue"></div>
         </div>
       
     </div>

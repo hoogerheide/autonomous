@@ -233,14 +233,16 @@ class AutoReflBase(object):
             # TODO: instrument-specific reduction
             spec = reduce(specdata, bkgpdata, bkgmdata)
 
-            mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
-                            spec.detector.wavelength, spec.detector.wavelength_resolution,  \
-                            spec.v, spec.dv, spec.Qz, spec.dQ
+            if spec is not None:
 
-            m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
-            m.fitness.probe.oversample(self.oversampling)
-            m.fitness.probe.resolution = self.instrument.resolution
-            m.fitness.update()
+                mT, mdT, mL, mdL, mR, mdR, mQ, mdQ = spec.sample.angle_x, spec.angular_resolution, \
+                                spec.detector.wavelength, spec.detector.wavelength_resolution,  \
+                                spec.v, spec.dv, spec.Qz, spec.dQ
+
+                m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
+                m.fitness.probe.oversample(self.oversampling)
+                m.fitness.probe.resolution = self.instrument.resolution
+                m.fitness.update()
         
         # protect against too few data points
         self.problem.partial = True

@@ -3,6 +3,7 @@ import copy
 import os
 import sys
 import time
+import json
 from queue import Empty
 
 import numpy as np
@@ -116,6 +117,8 @@ class AutoReflLauncher(StoppableThread):
             # need to wait for measurements to be acquired
             self._update_data()     # blocking, can be slow
 
+            socketserver.write(('update_plot', self.update_plot_data()))
+
             # start fitting
             if not self.stopped():
                 print('AutoLauncher: fitting data')
@@ -128,6 +131,7 @@ class AutoReflLauncher(StoppableThread):
                 self.exp.fit_step(abort_test=stop_fit_criterion, monitors=monitors)
 
                 socketserver.write(('fit_update', 'Final chi-squared: '+ self.exp.steps[-1].final_chisq))
+                socketserver.write(('update_plot', self.update_plot_profiles()))
 
                 if not self.stopped():
                     print('AutoLauncher: calculating FOM')
@@ -170,6 +174,40 @@ class AutoReflLauncher(StoppableThread):
         for i, step in enumerate(self.exp.steps):
             step.points = self.measurementhandler.data[i]
 
+    def update_plot_data(self) -> str:
+
+        from autorefl.reduction import reduce
+
+        plotdata = {'data': []}
+
+        modeldata = self.exp.get_data()
+        for specdata, bkgpdata, bkgmdata in modeldata:
+            refl = reduce(specdata, bkgpdata, bkgmdata)
+            if refl is not None:
+                plotdata['data'].append({'x': list(refl.x),
+                                 'v': list(refl.v),
+                                 'dv': list(refl.dv),
+                            })
+
+        return json.dumps(plotdata)
+
+    def update_plot_profiles(self) -> str:
+
+        from bumps.plotutil import form_quantiles
+
+        plotdata = {'ci': []}
+        for q, qprofs in zip(self.exp.measQ, self.exp.steps[-1].qprofs):
+            _, ci = form_quantiles(qprofs, [68, 95])
+
+            plotdata['ci'].append({'x': list(q),
+                                '68': {'lower': list(ci[0][0]),
+                                        'upper': list(ci[0][1])},
+                                '95': {'lower': list(ci[1][0]),
+                                        'upper': list(ci[1][1])},
+                            })
+
+        return json.dumps(plotdata)
+
     def stop(self):
         print('AutoReflHandler: stopping')
         super().stop()
@@ -210,7 +248,16 @@ if __name__ == '__main__':
     measQ = (qmin-qstep) + np.cumsum(dq)
     #measQ = [m.fitness.probe.Q for m in model.models]
 
-    exp = AutoReflExperiment('test', model, measQ, instr, bestpars=bestp, meas_bkg=3e-6, eta=0.5, npoints=6, select_pars=sel, min_meas_time=20.0, fit_options={'burn': 1000, 'steps': 100, 'pop': 8})
+    exp = AutoReflExperiment('test', model, measQ, instr,
+                             bestpars=bestp,
+                             meas_bkg=3e-6,
+                             eta=0.5,
+                             npoints=6,
+                             select_pars=sel,
+                             min_meas_time=20.0,
+                             fit_options={'burn': 1000,
+                                          'steps': 100,
+                                          'pop': 4})
     if instr.name == 'MAGIK':
         exp.x = exp.measQ
     elif instr.name == 'CANDOR':

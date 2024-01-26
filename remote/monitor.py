@@ -23,6 +23,7 @@ async def hello(request):
     return web.FileResponse('remote/socketpage.html')
 
 app.add_routes([web.get('/', hello)])
+app.add_routes([web.static('/lib', 'remote/lib')])
 
 @sio.on('connect')
 async def dump_history(sid, data):
@@ -138,8 +139,8 @@ if __name__=='__main__':
     #signals.measurement_queue.put('hello')
     s = SocketServer(daemon=False)
     s.start()
-    time.sleep(2)
-    if False:
+    time.sleep(10)
+    """if False:
         s.inqueue.put(('fit_update', 'hello'))
         time.sleep(10)
         s.inqueue.put(('fit_update', 'hello2'))
@@ -148,6 +149,6 @@ if __name__=='__main__':
     else:
         for i in range(200):
             s.inqueue.put(('fit_update', i))
-            time.sleep(0.2)
+            time.sleep(0.2)"""
     s.stop()
     s.join()
