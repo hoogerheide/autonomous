@@ -102,6 +102,7 @@ class AutoReflLauncher(StoppableThread):
         socketserver.write(('fit_update', 'Calculating initial points'))
         print('AutoLauncher: calculating initial points')
         points, init_qprofs = self.exp.initial_points()
+        socketserver.write(('update_plot', self.update_plot_profiles(init_qprofs)))
         total_t = 0.0
         k = 0
 
@@ -145,7 +146,7 @@ class AutoReflLauncher(StoppableThread):
                 self.exp.fit_step(abort_test=stop_fit_criterion, monitors=monitors)
 
                 socketserver.write(('fit_update', 'Final chi-squared: '+ self.exp.steps[-1].final_chisq))
-                socketserver.write(('update_plot', self.update_plot_profiles()))
+                socketserver.write(('update_plot', self.update_plot_profiles(self.exp.steps[-1].qprofs)))
 
                 if not self.stopped():
                     print('AutoLauncher: calculating FOM')
@@ -203,12 +204,12 @@ class AutoReflLauncher(StoppableThread):
 
         return json.dumps(plotdata)
 
-    def update_plot_profiles(self) -> str:
+    def update_plot_profiles(self, allqprofs) -> str:
 
         from bumps.plotutil import form_quantiles
 
         plotdata = {'ci': []}
-        for q, qprofs in zip(self.exp.measQ, self.exp.steps[-1].qprofs):
+        for q, qprofs in zip(self.exp.measQ, allqprofs):
             _, ci = form_quantiles(qprofs, [68, 95])
 
             plotdata['ci'].append({'x': list(q),
