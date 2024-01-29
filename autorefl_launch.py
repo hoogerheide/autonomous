@@ -5,15 +5,16 @@ import sys
 import time
 import json
 from queue import Empty
+from threading import Event
 
 import numpy as np
 
 from remote.nicepath import nicepath
-sys.path.append(nicepath)
+#sys.path.append(nicepath)
 import nice.remote
 
 from remote.util import StoppableThread
-from remote.nicedata import Signaller, blocking, MeasurementHandler
+from remote.nicedata import Signaller, blocking, MeasurementThread, NICEMeasurementThread, NICEMeasurementDevice, SimMeasurementDevice
 from remote.monitor import SocketMonitor, SocketServer, QueueMonitor, buttonhandler
 from bumps.fitters import ConsoleMonitor
 
@@ -53,8 +54,18 @@ class AutoReflLauncher(StoppableThread):
         self.exp = exp
         self.signals = signals
         self.maxtime = maxtime
-        self.measurementhandler = MeasurementHandler(signals, motors_to_move=exp.instrument.trajectoryMotors(), filename='test', use_simulated_data=use_simulated_data, name='MeasurementHandler')
-
+        if False:
+            self.measurementhandler = NICEMeasurementThread(
+                task=NICEMeasurementDevice(signals,
+                                        motors_to_move=exp.instrument.trajectoryMotors(),
+                                        filename='test',
+                                        use_simulated_data=use_simulated_data),
+                host='localhost',
+                name='AutoRefl'
+            )
+        else:
+            self.measurementhandler = MeasurementThread(SimMeasurementDevice(signals))
+        
         fprefix = '%s_eta%0.2f_npoints%i' % (self.exp.instrument.name, exp.eta, exp.npoints)
         fsuffix = '' if cli_args['name'] is None else cli_args['name']
 
@@ -70,19 +81,15 @@ class AutoReflLauncher(StoppableThread):
         queuemonitor = QueueMonitor(self.signals.measurement_queue, socketserver.inqueue)
 
         # register callbacks
-        self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('set_current_measurement', data)))
-        self.measurementhandler.publish_callbacks.append(lambda data: self._update_data())
-        self.measurementhandler.publish_callbacks.append(lambda data: socketserver.write(('update_plot', self.update_plot_data())))
-
-        #fitmonitor = SocketMonitor(socketserver.inqueue)
-
-        api = nice.remote.connect('localhost', 'AutoRefl')
-        api.run_task(self.measurementhandler, wait=False)
+        self.measurementhandler.register_publish_callback(lambda data: socketserver.write(('set_current_measurement', data)))
+        self.measurementhandler.register_publish_callback(lambda data: self._update_data() if data is not None else None)
+        self.measurementhandler.register_publish_callback(lambda data: socketserver.write(('update_plot', self.update_plot_data())))
+        self.measurementhandler.start()
 
         # register api callbacks
         buttonhandler.start_callbacks.append(self.signals.global_start.set)
         buttonhandler.stop_callbacks.append(self.stop)
-        buttonhandler.terminate_callbacks.append(api.terminateCount)
+        buttonhandler.terminate_count_callbacks.append(self.measurementhandler.task.terminate_count)
 
 #        print(self.measurementhandler.name)
 #        t1 = threading.Thread(target=lambda: api.run_task(self.measurementhandler), daemon=True)
@@ -113,10 +120,6 @@ class AutoReflLauncher(StoppableThread):
 
             socketserver.write(('new_step', {'step': k, 'text': 'Step: %i, Total time so far: %0.1f' % (k, total_t)}))
             print('AutoLauncher: Step: %i, Total time so far: %0.1f' % (k, total_t))
-
-            # create data placeholder (TODO: replace with set_default)
-            if k not in self.measurementhandler.data.keys():
-                self.measurementhandler.data[k] = []
 
             print('AutoLauncher: updating queue')
             # wait for measurement to become complete, then add new points
@@ -171,9 +174,6 @@ class AutoReflLauncher(StoppableThread):
 
 
         # also signals measurementhandler to stop
-
-        api.end_serve()
-        api.disconnect()
         socketserver.stop()
         self.stop()
 
@@ -184,8 +184,9 @@ class AutoReflLauncher(StoppableThread):
         # populate current step with new data
         #print(self.measurementhandler.data)
 
+        data = self.measurementhandler.get_data()
         for i, step in enumerate(self.exp.steps):
-            step.points = self.measurementhandler.data[i]
+            step.points = data.get(i, [])
 
     def update_plot_data(self) -> str:
 

@@ -134,17 +134,22 @@ class ButtonHandler:
     def __init__(self):
         
         self.stop_callbacks = []
-        self.terminate_callbacks = []
+        self.terminate_count_callbacks = []
         self.start_callbacks = []
 
     def stop(self):
 
         for callback in self.stop_callbacks:
             callback()
+
+    def terminateFit(self):
+
+        for callback in self.terminate_fit_callbacks:
+            callback()
         
     def terminateCount(self):
 
-        for callback in self.terminate_callbacks:
+        for callback in self.terminate_count_callbacks:
             callback()
 
     def start(self):

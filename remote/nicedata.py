@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Callable
 
 import time
 from threading import Event, Timer
@@ -13,9 +13,9 @@ from autorefl.datastruct import DataPoint, MeasurementPoint, Intent, data_attrib
 # NICE import
 import sys
 from remote.nicepath import nicepath
-sys.path.append(nicepath)
+#sys.path.append(nicepath)
 
-from nice.remote import Task
+from nice.remote import Task, _remoteApi, connect
 
 def blocking(func):
     """
@@ -164,79 +164,24 @@ class DataQueueListener(StoppableThread):
         # more than one event
         self.signals.new_data_acquired.set()
 
-class MeasurementHandler(Task):
-    """
-    Threaded handler for measurement control
-    """
+class MeasurementDevice(StoppableThread):
 
-    def __init__(self, signals: Signaller,
-                 motors_to_move: List[str],
-                 filename: str,
-                 use_simulated_data: bool = False,
-                 *args, **kwargs) -> None:
+    def __init__(self, signals: Signaller) -> None:
+        super().__init__()
         
-        super().__init__(*args, **kwargs)
         self.signals = signals
         self.active_count = None
-        self.api_locked = False
-        self.use_simulated_data = use_simulated_data
         self.publish_callbacks = []
 
-        self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
-        self.filename = filename
-        self._filename = filename
-        
         # data repository
         self.data: Dict[int, List[DataPoint]] = {}
-        self._stop_event = Event()
-
-    def stopped(self):
-        return self._stop_event.is_set()
-
-    def clear(self):
-        self._stop_event.clear()
 
     def publish(self, data):
         for callback in self.publish_callbacks:
             callback(data)
 
-    def _get_current_list(self, step_id) -> list:
-
-        if step_id not in self.data.keys():
-            self.data[step_id] = []
-        
-        return self.data[step_id]
-
-    def _produce_random_point(self):
-
-        # for testing only
-
-        from autorefl.instrument import MAGIK
-
-        instr = MAGIK()
-
-        x = np.random.uniform(0.008, 0.25)
-        intent = Intent.spec
-
-        base = DataPoint(x, np.random.uniform(0, 2) + 2, 0,
-                         (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
-                          None, instr.intensity(x)[0]),
-                         intent=intent)
-        pt = MeasurementPoint(1, 1, base, instr.trajectoryData(x, intent))
-
-        base = DataPoint(x, np.random.uniform(0, 2) + 2, 0,
-                         (instr.T(x)[0], instr.dT(x)[0], instr.L(x)[0], instr.dL(x)[0],
-                          None, instr.intensity(x)[0]),
-                         intent=intent)
-        pt2 = MeasurementPoint(1, 2, base, instr.trajectoryData(x, intent))
-
-        points = [[pt], [pt2]]
-
-        print(f'Producing random point list {pt}')
-
-        self.signals.measurement_queue.put(points)
-        self.signals.measurement_queue_updated.set()
-        self.signals.measurement_queue_empty.clear()
+    def terminate_count(self):
+        pass
 
     @blocking
     def _measure_queue(self) -> None:
@@ -270,7 +215,6 @@ class MeasurementHandler(Task):
                         #else:
                         #self._get_current_list(pt.step_id).append(pt.base)
 
-
                 if ptlistnum == 0:
                     # signal that first point list is complete, but only after the first set
                     # this allows the listener to clear the signal
@@ -282,7 +226,6 @@ class MeasurementHandler(Task):
 
     @blocking
     def _move_count(self, pt: MeasurementPoint) -> None:
-
         # update current instrument position (for figure of merit calculation)
         try:
             self.signals.current_instrument_x.get_nowait()
@@ -292,6 +235,80 @@ class MeasurementHandler(Task):
         finally:
             self.signals.current_instrument_x.put(pt.base.x)
 
+    def run(self):
+
+        print(f'MeasurementHandler: waiting for start signal')
+
+        # wait for global start signal to come in
+        self.signals.global_start.wait()
+
+        print(f'MeasurementHandler: starting measurement loop')
+
+        #### Waits on measurement queue ####
+        while (not self.stopped()):
+
+            # TODO: figure out if use of qsize is okay or if mutex lock required
+            #with self.signals.measurement_queue.mutex:
+            if self.signals.measurement_queue.qsize() == 0:
+                # send signal that queue is empty
+                self.signals.measurement_queue_empty.set()
+            
+            # blocking call
+            self.signals.measurement_queue_updated.wait()
+
+            self._measure_queue()
+            
+class SimMeasurementDevice(MeasurementDevice):
+
+    def __init__(self, signals: Signaller) -> None:
+        super().__init__(signals)
+
+        self.terminate_count_event: Event = Event()
+
+    def terminate_count(self):
+        self.terminate_count_event.set()
+
+    @blocking
+    def _move_count(self, pt: MeasurementPoint) -> None:
+        super()._move_count(pt)
+
+        if pt.base.movet is None:
+            pt.base.movet = 0
+
+        # interruptible sleep for move time + count time
+        init_time = time.time()
+        while (not self.stopped()) & (not self.terminate_count_event.is_set()) & ((time.time() - init_time) < (pt.base.t + pt.base.movet)):
+            time.sleep(0.1)
+
+        self.terminate_count_event.clear()
+
+        # add data point to data repository
+        self.data.setdefault(pt.step_id, []).append(pt.base)
+
+class NICEMeasurementDevice(MeasurementDevice, Task):
+    """
+    Threaded handler for measurement control
+    """
+
+    def __init__(self, signals: Signaller,
+                 motors_to_move: List[str],
+                 filename: str,
+                 use_simulated_data: bool = False) -> None:
+        
+        super().__init__(signals)
+
+        self.active_count = None
+        self.use_simulated_data = use_simulated_data
+
+        self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
+        self.filename = filename
+        self._filename = filename
+        
+
+    @blocking
+    def _move_count(self, pt: MeasurementPoint) -> None:
+        super()._move_count(pt)
+        
         # blocking
         init_time = time.time()
         self.api.move(pt.movements)
@@ -349,60 +366,83 @@ class MeasurementHandler(Task):
             # Shouldn't be necessary as interrupted counts will be ignored
             datapoint.t = livetime
 
-        self._get_current_list(basedatapoint.step_id).append(datapoint)
+        self.data.setdefault(basedatapoint.step_id, []).append(datapoint)
+
+    def terminate_count(self):
+        if self.active_count is not None:
+            if not self.active_count.isFinished():
+                self.api.terminateCount()        
 
     def run(self):
-
-        print(f'MeasurementHandler: starting measurement task')
 
         # start trajectory
         self.api.measurement_start(control_nodes=self.motors_to_move, title='test_traj')
 
-        # blocking: will wait until configuration comes through
-        #self.signals.new_trajectory_acquired.wait()
-        #scaninfo = self.signals.trajectory_queue.get()
-
         self._filename = self.filename #scaninfo['data']['trajectoryData.fileName']
 
-        # wait for global start signal to come in
-        self.signals.global_start.wait()
+        # run measurement device
+        super().run()
 
-        print(f'MeasurementHandler: starting measurement loop with filename {self._filename}')
-
-        #### Waits on measurement queue ####
-        while (not self.stopped()):
-
-            # TESTING ONLY: produce and queue up new measurement point
-            #self._produce_random_point()
-
-            # TODO: figure out if use of qsize is okay or if mutex lock required
-            #with self.signals.measurement_queue.mutex:
-            if self.signals.measurement_queue.qsize() == 0:
-                # send signal that queue is empty
-                self.signals.measurement_queue_empty.set()
-            
-            # blocking call
-            self.signals.measurement_queue_updated.wait()
-
-            self._measure_queue()
-            
+        # end trajectory
         self.api.measurement_end()
 
     def stop(self):
         print('MeasurementHandler: stopping')
-        self._stop_event.set()
+        super().stop()
         #super().stop()
 
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event. May have downstream effects if this event is ever used for something else
         self.signals.global_start.set()
-        if self.active_count is not None:
-            if not self.active_count.isFinished():
-                self.api.terminateCount()        
+        self.terminate_count()
         self.signals.measurement_queue.empty()
         self.signals.measurement_queue_updated.set()
         self.signals.first_measurement_complete.set()
 
+class MeasurementThread(StoppableThread):
+
+    def __init__(self, task: MeasurementDevice, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.task = task
+
+    def get_data(self) -> Dict[int, List[DataPoint]]:
+        
+        return self.task.data
+    
+    def register_publish_callback(self, callback: Callable) -> None:
+        
+        self.task.publish_callbacks.append(callback)
+
+    def run(self):
+
+        self.task.start()
+        self.task.join()
+
+    def stop(self):
+        self.task.stop()
+        super().stop()
+
+class NICEMeasurementThread(MeasurementThread):
+
+    def __init__(self, task: NICEMeasurementDevice, *args, host='localhost', name='AutoRefl', **kwargs):
+        super().__init__(task, *args, **kwargs)
+
+        self.name = name
+        self.host = host
+        self.api: _remoteApi | None = None
+
+    def run(self):
+
+        self.api = connect(self.host, self.name)
+        self.api.run_task(self.task, wait=True)
+
+        self.api.end_serve()
+        self.api.disconnect()
+
+    def stop(self):
+        super().stop()
+        self.task.stop()
 
 if __name__ == '__main__':
 
