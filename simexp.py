@@ -7,6 +7,7 @@ from bumps.fitters import DreamFit, ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 from bumps.mapper import MPMapper
 from bumps.dream.stats import credible_interval
+from bumps.plotutil import plot_quantiles
 #from bumps.dream.state import load_state
 #from refl1d.names import FitProblem, Experiment
 from refl1d.resolution import TL2Q, dTdL2dQ
@@ -365,6 +366,7 @@ class SimReflExperiment(object):
     def calc_qprofiles(self, drawpoints, mappercalc):
         # q-profile calculator using multiprocessing for speed
         # this version is limited to calculating profiles with measQ, cannot be used with initial calculation
+        print(drawpoints.shape)
         res = mappercalc(drawpoints)
 
         # condition output of mappercalc to a list of q-profiles for each model
@@ -448,12 +450,12 @@ class SimReflExperiment(object):
         # Calculate figures of merit and proposed measurement times with forecasting
         print('Calculating figures of merit:')
         init_time = time.time()
-        pts = step.draw.points[:, self.sel]
+        pts = copy.copy(step.draw.points) #[:, self.sel]
 
         if self.entropy_options['scale']:
-            pts = copy.copy(pts) / self.par_scale[:, self.sel]
+            pts = copy.copy(pts) / self.par_scale #[:, self.sel]
 
-        qprofs = step.qprofs
+        qprofs = copy.deepcopy(step.qprofs)
         foms, meastimes, Hs, newpoints = self._fom_from_draw(pts, qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat)
         print('Total figure of merit calculation time: %f' % (time.time() - init_time))
 
@@ -689,6 +691,9 @@ class SimReflExperiment(object):
             N -- number of samples
             P -- number of marginalized paramters"""
 
+        orgpts = copy.copy(pts)
+        pts = pts[:, self.sel]
+
         # Cycle through models, with model-specific x, Q, calculated q profiles, and measurement background level
         # Populate q vectors, interpolated q profiles (slow), and intensities
         intensities = list()
@@ -721,6 +726,17 @@ class SimReflExperiment(object):
             xqprofs.append(xqprof)
 
         print(f'Forecast setup time: {time.time() - init_time}')
+
+        print('Starting mapper pool, initializing GMM')
+        mapper = MPMapper.start_mapper(self.problem, None, cpus=0)
+        mappercalc = lambda points: MPMapper.pool.map(_MP_calc_qprofile, ((MPMapper.problem_id, p) for p in points))
+
+        gmm_options = {'method': 'gmm'}
+        _, _, gmm_predictor = calc_entropy(orgpts / self.par_scale, None, options=gmm_options, predictor=None)
+        gmm_predictor.warm_start = True
+        gmm_npoints = len(pts)
+        print(f'Number of GMM points: {gmm_npoints}')
+        print(np.std(orgpts, axis=0))
 
         all_foms = list()
         all_meas_times = list()
@@ -784,6 +800,7 @@ class SimReflExperiment(object):
 
                 # Calculate measurement times (shape XD)
                 med = np.median(xqprof, axis=0)
+                #print(med, sel_sigma)
                 xrefl_sel = (incident_neutrons * med * (sel_sigma / med) ** 2)
                 xrefl_meas = (incident_neutrons * med * (meas_sigma / med) ** 2)
                 meastime_sel = 1.0 / xrefl_sel
@@ -853,15 +870,61 @@ class SimReflExperiment(object):
             newpts = pts[chosen]
             newxqprofs = [xqprof[chosen] for xqprof in xqprofs]
 
+            print('Updating GMM, calculating new profiles')
+            # update GMM predictor with new points
+            _, _, gmm_predictor = calc_entropy(orgpts[chosen] / self.par_scale, None, options=gmm_options, predictor=gmm_predictor)
+            orgpts, _ = gmm_predictor.sample(gmm_npoints)
+            orgpts *= self.par_scale
+            newqprofs = self.calc_qprofiles(orgpts, mappercalc)
+            newpts = orgpts[:, self.sel]
+
+            print(np.std(orgpts, axis=0))
+            if False:
+                fig, axs = plt.subplots(2, len(foms), squeeze=False, sharex=True)
+                axtops, axbots = axs[0], axs[1]
+                for fom, scaled_fom, q, qprof, axtop, axbot in zip(foms, scaled_foms, qs, newqprofs, axtops, axbots):
+                    axbot.plot(q, fom)
+                    axbot.plot(q, scaled_fom)
+                    plt.sca(axtop)
+                    plot_quantiles(q, qprof, [68, 95], 'C6')
+                    axtop.plot(q, np.median(qprof, axis=0))
+                    axtop.set_yscale('log')
+                    #for qp in qprof:
+                    #    axtop.plot(q, qp, alpha=0.1)
+                plt.show()
+
+
             # set up next iteration
-            xqprofs = newxqprofs
+            qprofs = newqprofs
             pts = newpts
+            xqprofs = list()
+            for xs, Qth, qprof, qbkg in zip(self.x, self.measQ, qprofs, self.meas_bkg):
+
+                # get the incident intensity and q values for all x values (should have same shape X x D).
+                # flattened dimension is XD
+                incident_neutrons = self.instrument.intensity(xs)
+                incident_neutrons = incident_neutrons.flatten()
+
+                # define signal to background. For now, this is just a scaling factor on the effective rate
+                # reference: Hoogerheide et al. J Appl. Cryst. 2022
+                sbr = qprof / qbkg
+                refl = qprof/(1+2/sbr)
+                refl = np.clip(refl, a_min=0, a_max=None)
+
+                # perform interpolation. xqprof should have shape N x XD. This is a slow step (and should only be done once)
+                interp_refl = interp1d(Qth, refl, axis=1, fill_value=(refl[:,0], refl[:,-1]), bounds_error=False)
+                xqprof = np.array(interp_refl(q))
+
+                xqprofs.append(xqprof)
 
             print(f'Forecast step {i}:\tNumber of samples: {N}\tCalculation time: {time.time() - init_time}')
 
         # reset instrument state
         self.instrument.x = org_x
         self.curmodel = org_curmodel
+
+        MPMapper.stop_mapper(mapper)
+        MPMapper.pool = None
 
         return all_foms, all_meas_times, all_H0, all_new
 
