@@ -135,6 +135,7 @@ class ButtonHandler:
         
         self.stop_callbacks = []
         self.terminate_count_callbacks = []
+        self.terminate_fit_callbacks = []
         self.start_callbacks = []
 
     def stop(self):
@@ -164,10 +165,15 @@ async def start(sid, data):
     await emit_history('start_received', None)
     buttonhandler.start()
 
-@sio.on('terminate')
-async def terminate(sid, data):
-    await emit_history('terminate_received', None)
+@sio.on('terminate_count')
+async def terminate_count(sid, data):
+    await emit_history('terminate_count_received', None)
     buttonhandler.terminateCount()
+
+@sio.on('terminate_fit')
+async def terminate_fit(sid, data):
+    await emit_history('terminate_fit_received', None)
+    buttonhandler.terminateFit()
 
 @sio.on('stop')
 async def stop(sid, data):

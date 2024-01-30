@@ -91,6 +91,9 @@ class AutoReflLauncher(StoppableThread):
         buttonhandler.stop_callbacks.append(self.stop)
         buttonhandler.terminate_count_callbacks.append(self.measurementhandler.task.terminate_count)
 
+        terminate_fit_event: Event = Event()
+        buttonhandler.terminate_fit_callbacks.append(terminate_fit_event.set)
+
 #        print(self.measurementhandler.name)
 #        t1 = threading.Thread(target=lambda: api.run_task(self.measurementhandler), daemon=True)
 #        t1.start()
@@ -142,11 +145,14 @@ class AutoReflLauncher(StoppableThread):
                 print('AutoLauncher: fitting data')
                 socketserver.write(('fit_update', 'Initializing fit...'))
                 # fit the step. Blocks, but exits on stop or if measurement becomes idle
-                stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set())
+                stop_fit_criterion = lambda: (self.stopped() | self.signals.measurement_queue_empty.is_set() | terminate_fit_event.is_set())
                 #stop_fit_criterion = lambda: self.stopped()
                 #monitors = [ConsoleMonitor(self.exp.problem), SocketMonitor(self.exp.problem, socketserver.inqueue)]
                 monitors = [SocketMonitor(self.exp.problem, socketserver.inqueue)]
                 self.exp.fit_step(abort_test=stop_fit_criterion, monitors=monitors)
+
+                # reset terminate_fit event
+                terminate_fit_event.clear()
 
                 socketserver.write(('fit_update', 'Final chi-squared: '+ self.exp.steps[-1].final_chisq))
                 socketserver.write(('update_plot', self.update_plot_profiles(self.exp.steps[-1].qprofs)))
