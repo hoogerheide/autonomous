@@ -664,7 +664,7 @@ class SimReflExperiment(object):
 
         return foms, meas_times
 
-    def _fom_from_draw(self, pts, qprofs, select_ci_level=0.68, meas_ci_level=0.68, n_forecast=1, allow_repeat=True):
+    def _fom_from_draw(self, pts, qprofs, select_ci_level=0.68, meas_ci_level=0.68, n_forecast=1, allow_repeat=True, correct_meastime=False):
         """ Calculate figure of merit from a set of draw points and associated q profiles
         
             Inputs:
@@ -791,6 +791,27 @@ class SimReflExperiment(object):
 
                 # apply min measurement time (turn this off initially to test operation)
                 #meastime = np.maximum(np.full_like(meastime, self.min_meas_time), meastime)
+
+                if correct_meastime:
+                    for i, (imeastime, iincident_neutrons, imed, ixqprof, isel_sigma) in enumerate(zip(meastime_sel, incident_neutrons, med, xqprof.T, sel_sigma)):
+                        if imeastime < self.min_meas_time:
+                            #print(i, imeastime, iincident_neutrons, imed, ixqprof.shape, isel_sigma)
+                            newsigma = (imed / (iincident_neutrons * self.min_meas_time)) ** 0.5
+                            #print(newsigma)
+                            newcrit = np.abs(ixqprof - imed) < 2 * newsigma
+
+                            # if not enough points to make determination, don't measure there
+                            if sum(newcrit) < 3:
+                                Hs[i] = H0
+                            else:
+                                #print(sum(newcrit), pts[newcrit, :].shape)
+                                newH = calc_entropy(pts[newcrit, :], None, options=self.entropy_options, predictor=predictor)[0]
+                                #print('Old H: ', Hs[i], 'New H: ', newH)
+                                Hs[i] = newH
+                            
+                            meastime_sel[i] = self.min_meas_time
+
+                            
 
                 # figure of merit is dHdt (reshaped to X x D)
                 dHdt = (H0 - Hs) / meastime_sel
