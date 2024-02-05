@@ -54,13 +54,13 @@ class AutoReflLauncher(StoppableThread):
         self.exp = exp
         self.signals = signals
         self.maxtime = maxtime
-        if False:
+        if True:
             self.measurementhandler = NICEMeasurementThread(
                 task=NICEMeasurementDevice(signals,
                                         motors_to_move=exp.instrument.trajectoryMotors(),
                                         filename='test',
                                         use_simulated_data=use_simulated_data),
-                host='localhost',
+                host='132.163.220.228',
                 name='AutoRefl'
             )
         else:

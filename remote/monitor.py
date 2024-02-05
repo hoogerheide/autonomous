@@ -40,7 +40,7 @@ async def dump_history(sid, data):
 
 class SocketServer(StoppableThread):
 
-    def __init__(self, *args, host='localhost', port=5012, **kwargs):
+    def __init__(self, *args, host='0.0.0.0', port=5012, **kwargs):
         super().__init__(*args, **kwargs)
         self.host = host
         self.port = port
