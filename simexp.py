@@ -454,7 +454,7 @@ class SimReflExperiment(object):
             pts = copy.copy(pts) / self.par_scale[:, self.sel]
 
         qprofs = step.qprofs
-        foms, meastimes, Hs, newpoints = self._fom_from_draw(pts, qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat)
+        foms, meastimes, Hs, newpoints = self._fom_from_draw(pts, qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat, correct_meastime=True)
         print('Total figure of merit calculation time: %f' % (time.time() - init_time))
 
         # populate step foms (TODO: current analysis code can't handle multiple foms, could pass all of them in here)
@@ -793,7 +793,7 @@ class SimReflExperiment(object):
                 #meastime = np.maximum(np.full_like(meastime, self.min_meas_time), meastime)
 
                 if correct_meastime:
-                    for i, (imeastime, iincident_neutrons, imed, ixqprof, isel_sigma) in enumerate(zip(meastime_sel, incident_neutrons, med, xqprof.T, sel_sigma)):
+                    for k, (imeastime, iincident_neutrons, imed, ixqprof, isel_sigma) in enumerate(zip(meastime_sel, incident_neutrons, med, xqprof.T, sel_sigma)):
                         if imeastime < self.min_meas_time:
                             #print(i, imeastime, iincident_neutrons, imed, ixqprof.shape, isel_sigma)
                             newsigma = (imed / (iincident_neutrons * self.min_meas_time)) ** 0.5
@@ -802,14 +802,14 @@ class SimReflExperiment(object):
 
                             # if not enough points to make determination, don't measure there
                             if sum(newcrit) < 3:
-                                Hs[i] = H0
+                                Hs[k] = H0
                             else:
                                 #print(sum(newcrit), pts[newcrit, :].shape)
                                 newH = calc_entropy(pts[newcrit, :], None, options=self.entropy_options, predictor=predictor)[0]
                                 #print('Old H: ', Hs[i], 'New H: ', newH)
-                                Hs[i] = newH
+                                Hs[k] = newH
                             
-                            meastime_sel[i] = self.min_meas_time
+                            meastime_sel[k] = self.min_meas_time
 
                             
 
