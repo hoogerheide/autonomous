@@ -7,6 +7,9 @@ from bumps.fitters import DreamFit, ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 from bumps.mapper import MPMapper
 from bumps.dream.stats import credible_interval
+from bumps.parameter import FreeVariables, Parameter
+from bumps.fitproblem import FitProblem
+from refl1d.names import Experiment
 #from bumps.dream.state import load_state
 #from refl1d.names import FitProblem, Experiment
 from refl1d.resolution import TL2Q, dTdL2dQ
@@ -195,6 +198,7 @@ class SimReflExperiment(object):
 
         # Initialize the fit problem
         self.problem = problem
+        self.org_problem = copy.deepcopy(problem)
         models = [problem] if hasattr(problem, 'fitness') else list(problem.models)
         self.models = models
         self.nmodels = len(models)
@@ -239,6 +243,8 @@ class SimReflExperiment(object):
         self.calcmodels = [calcmodel] if hasattr(calcmodel, 'fitness') else list(calcmodel.models)
         if bestpars is not None:
             calcmodel.setp(bestpars)
+
+        self.calcmodel = calcmodel
 
         # deal with inherent measurement background
         if not isinstance(meas_bkg, (list, np.ndarray)):
@@ -332,7 +338,6 @@ class SimReflExperiment(object):
 
             # simulate the data
             Ns, Nbkgs, Nincs = ar.sim_data_N(newR, target_incident_neutrons, resid_bkg=resid_bkg, meas_bkg=meas_bkg)
-
             # Calculate T, dT, L, dL. Note that because these data don't constrain the model at all,
             # these values are brought in from MAGIK (not instrument-specific) because they don't need
             # to be.
@@ -359,6 +364,7 @@ class SimReflExperiment(object):
             m.fitness.update()
         
         # Triggers recalculation of all models
+        self.problem.partial = True
         self.problem.model_reset()
         self.problem.chisq_str()
 
@@ -446,24 +452,41 @@ class SimReflExperiment(object):
         step = self.steps[-1]
         
         # Calculate figures of merit and proposed measurement times with forecasting
-        print('Calculating figures of merit:')
-        init_time = time.time()
-        pts = step.draw.points[:, self.sel]
 
-        if self.entropy_options['scale']:
-            pts = copy.copy(pts) / self.par_scale[:, self.sel]
+        new_value, newpoints, foms, meastimes = self._check_alt_models(step)
 
-        qprofs = step.qprofs
-        foms, meastimes, Hs, newpoints = self._fom_from_draw(pts, qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat, correct_meastime=True)
-        print('Total figure of merit calculation time: %f' % (time.time() - init_time))
+        if new_value is None:
 
-        # populate step foms (TODO: current analysis code can't handle multiple foms, could pass all of them in here)
-        step.foms, step.meastimes = foms[0], meastimes[0]
+            print('Calculating figures of merit:')
+            init_time = time.time()
+            pts = step.draw.points[:, self.sel]
+
+            if self.entropy_options['scale']:
+                pts = copy.copy(pts) / self.par_scale[:, self.sel]
+
+            qprofs = step.qprofs
+            foms, meastimes, Hs, newpoints = self._fom_from_draw(pts, qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat, correct_meastime=True)
+            print('Total figure of merit calculation time: %f' % (time.time() - init_time))
+            
+            # populate step foms (TODO: current analysis code can't handle multiple foms, could pass all of them in here)
+            step.foms, step.meastimes = foms[0], meastimes[0]
+
+        else:
+            if len(newpoints) > self.npoints:
+                newpoints = newpoints[:self.npoints]
+
+            # shifts foms to the correct position in the list
+            foms = [[[]] * (self.nmodels) + fom for fom in foms]
+
+            step.foms, step.meastimes = foms, meastimes
+
+            self._add_model(new_value)
 
         # Determine next measurement point(s).
         # Number of points to be used is determined from n_forecast (self.npoints)
         # NOTE: At some point this could be turned into an asynchronous "point queue"; in this case the following loop will have to be
         #       over self.npoints
+
         points = []
         for pt, fom in zip(newpoints, foms):
             mnum, idx, newx, new_meastime = pt
@@ -480,6 +503,154 @@ class SimReflExperiment(object):
             self.instrument.x = newpoint.x
         
         self.add_step(points)
+
+    def _check_alt_models(self, step, n_forecast=8, meas_ci=0.68, switchvar='rho', switchvalues=[-0.5, 1.0, 2.5, 4.0, 5.0, 6.0]):
+        
+        foms, meastimes, Hs, newpoints = self._fom_from_draw(step.draw.points[:,self.sel], step.qprofs, select_ci_level=0.68, meas_ci_level=meas_ci, n_forecast=n_forecast, allow_repeat=True, correct_meastime=True)
+        
+        newproblem = copy.deepcopy(self.org_problem)
+        setattr(newproblem, 'calcQs', self.measQ)
+        setattr(newproblem, 'oversampling', self.oversampling)
+        setattr(newproblem, 'resolution', self.instrument.resolution)
+
+        mapper = MPMapper.start_mapper(newproblem, None, cpus=0)
+        mappercalc = lambda points: MPMapper.pool.map(_MP_calc_qprofile, ((MPMapper.problem_id, p) for p in points))
+
+        H_diff_model = []
+        all_newpoints = []
+        all_foms = []
+        all_meastimes = []
+
+        for switchvalue in switchvalues:
+
+            newpts_spread = copy.copy(step.draw.points)
+            #new_rho = np.median(step.draw.points[:, switch_parameter_index])
+            for k, v in newproblem.freevars._parametersets.items():
+                idx = newproblem.labels().index(v[0].name)
+                
+                # if we're setting the value of the new variable, use custom limits, otherwise copy limits from original parameter
+                if k == switchvar:
+                    print(f'Found switchvar in index {idx}')
+                    lims = switchvalue - 0.1, switchvalue + 0.1
+                    v[0].range(lims[0], lims[1])
+                    switch_index = copy.copy(idx)
+
+                else:
+                    lims = v[0].bounds.limits
+                
+                newpts_spread[:, idx] = (lims[1] - lims[0]) * np.random.random(len(newpts_spread)) + lims[0]
+            
+            self.nmodels = 1 # hack to avoid error on next line
+            qprofs_spread = self.calc_qprofiles(newpts_spread, mappercalc)
+            try:
+                foms_spread_corr, meastimes_spread_corr, Hs_spread_corr, newpoints_spread_corr = self._fom_from_draw(newpts_spread[:, self.sel], qprofs_spread, select_ci_level=0.68, meas_ci_level=meas_ci, n_forecast=n_forecast, allow_repeat=True, correct_meastime=True)
+                dHdt_spread = (Hs_spread_corr[-1] - Hs_spread_corr[0]) / (sum(pt[3] for pt in newpoints_spread_corr[:-1]) + self.switch_time_penalty)
+                dHdt0 = (Hs[-1] - Hs[0]) / (sum(pt[3] for pt in newpoints[:-1]))
+            except IndexError: # usually because maximum point is not found
+                print(f'Warning: IndexError in {switchvar} = {switchvalue}, figure of merit probably ill-conditioned, skipping...')
+                dHdt_spread = 0
+                dHdt0 = 0
+                newpoints_spread_corr, foms_spread_corr, meastimes_spread_corr = None, None, None
+
+            H_diff_model.append(dHdt_spread - dHdt0)
+            all_newpoints.append(newpoints_spread_corr)
+            all_foms.append(foms_spread_corr)
+            all_meastimes.append(meastimes_spread_corr)
+
+        MPMapper.stop_mapper(mapper)
+        MPMapper.pool = None
+
+        self.nmodels = len(list(self.problem.models))
+
+        print(''.join((f'{sv}\t{Hd}\n' for sv, Hd in zip(switchvalues, H_diff_model))))
+
+        # check if criterion has been met
+        if min(H_diff_model) < 0:
+            idx = H_diff_model.index(min(H_diff_model))
+            newpoints = all_newpoints[idx]
+            # make sure model number is correct
+            for pt in newpoints:
+                pt[0] = self.nmodels
+            new_value = switchvalues[idx]
+            new_fom = all_foms[idx]
+            new_meastime = all_meastimes[idx]
+        else:
+            newpoints = None
+            new_value = None
+            new_fom = None
+            new_meastime = None
+
+        return new_value, newpoints, new_fom, new_meastime
+    
+    def _add_model(self, new_value, switchvar='rho'):
+        """Adds a new model
+        """
+
+        bestpars = {p.name: p.value for p in self.calcmodel._parameters}
+
+        fv: FreeVariables = self.problem.freevars
+
+        print(id(fv), [fv.get_model(i) for i in range(self.nmodels)])
+
+        newname = f'M{self.nmodels}'
+
+        # add a new name
+        fv.names += [newname]
+
+        def copy_parameter(p: Parameter):
+            newp = Parameter(fixed=p.fixed,
+                             fittable=p.fittable,
+                             _bounds=p._bounds,
+                             name='blah',
+                             value=p.value)
+            
+            return newp
+
+        # add new parameters for each name
+        for k, v in fv._parametersets.items():
+            v.parameters = np.append(v.parameters, copy.copy(v.reference))
+            v.parameters[-1].fittable = True
+            v.parameters[-1].name = newname + ' ' + v.reference.name
+            bestpars[v.parameters[-1].name] = v.reference.value
+            lims = v.parameters[0].bounds.limits
+            print(k, v, lims)
+            v.parameters[-1].range(lims[0], lims[1])
+            self.npars += 1
+            self.sel += 1
+
+         # set range of new parameter
+        fv._parametersets[switchvar][-1].range(new_value - 0.5, new_value + 0.5)
+        bestpars[fv._parametersets[switchvar][-1].name] = new_value
+        # expand list fields
+        self.measQ = np.array(self.measQ.tolist() + [self.measQ[0].tolist()])
+        self.x = np.array(self.x.tolist() + [self.x[0].tolist()])
+        self.meas_bkg = np.append(self.meas_bkg, self.meas_bkg[0])
+        self.resid_bkg = np.append(self.resid_bkg, self.resid_bkg[0])
+        self.nmodels += 1
+
+        print(fv.names, fv._parametersets[switchvar].parameters)
+        newmodel = copy.deepcopy(self.models[0].fitness)
+        #newmodel = Experiment(self.models[0].fitness.sample, copy.deepcopy(self.models[0].fitness.probe))
+        #newmodel.probe.background = self.models[0].fitness.probe.background
+        newmodel.probe.intensity = self.models[0].fitness.probe.intensity
+        newmodel.probe.theta_offset = self.models[0].fitness.probe.theta_offset
+        newmodel.probe.sample_broadening = self.models[0].fitness.probe.sample_broadening
+        newmodel.sample = self.models[0].fitness.sample
+
+        self.problem = FitProblem([m.fitness for m in self.models] + [newmodel], freevars=fv)
+        self.models = list(self.problem.models)
+        calcmodel = copy.deepcopy(self.problem)
+        self.calcmodels = [calcmodel] if hasattr(calcmodel, 'fitness') else list(calcmodel.models)
+        if bestpars is not None:
+            calcmodel.setp([bestpars[k] for k in calcmodel.labels()])
+
+        self.calcmodel = calcmodel
+
+        fv = self.problem.freevars
+        print(id(fv), [fv.get_model(i) for i in range(self.nmodels)])
+
+        # TODO: fix restart pop instead of resetting it
+        self.restart_pop = None
 
     def add_step(self, points, use=True):
         # Adds a set of DataPoint objects as a new ExperimentStep
@@ -511,7 +682,7 @@ class SimReflExperiment(object):
         switch_time_penalty = [0.0 if j == curmodel else self.switch_time_penalty for j in range(self.nmodels)]
 
         # Add all movement time penalties together.
-        movepenalty = [meastime / (meastime + self.instrument.movetime(x) + pen) for x, meastime, pen in zip(self.x, min_meas_times, switch_time_penalty)]
+        movepenalty = [meastime / (meastime + self.instrument.movetime(x) + 0.0) for x, meastime, pen in zip(self.x, min_meas_times, switch_time_penalty)]
 
         # Perform scaling
         scaled_foms = [fom * movepen for fom,movepen in zip(foms, movepenalty)]
@@ -1090,10 +1261,12 @@ class SimReflExperiment(object):
             maxfoms.append(fom[maxidx])
             maxQs.append(Qth[maxidx])
             maxidxs.append(maxidx)
+            #plt.figure()
+            #plt.plot(Qth, fom)
+            #plt.show()
 
         # condition the maximum indices
         maxidxs_m = [[fom, m, idx] for m, (idxs, mfoms) in enumerate(zip(maxidxs, maxfoms)) for idx, fom in zip(idxs, mfoms)]
-        #print(maxidxs_m)
         # select top point
         top_n = sorted(maxidxs_m, reverse=True)[start:min(start+1, len(maxidxs_m))][0]
 
@@ -1125,6 +1298,7 @@ class SimReflExperiment(object):
             except AttributeError:
                 to_calc = 0.0
 
+        self.calcmodel.set_active_model(mnum)
         calcR = ar.calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
         #print('expected R:', calcR)
         incident_neutrons = self.instrument.intensity(newx) * new_meastime
@@ -1228,6 +1402,7 @@ class SimReflExperimentControl(SimReflExperiment):
             dLs = self.instrument.dL(newx)
             #print(T, dT, L, dL)
             incident_neutrons = self.instrument.intensity(newx)
+            self.calcmodel.set_active_model(mnum)
             for x, t, T, dT, L, dL, intens in zip(newx, total_time * mtimeweight, Ts, dTs, Ls, dLs, incident_neutrons):
                 calcR = ar.calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
             #print('expected R:', calcR)
@@ -1287,9 +1462,10 @@ def _calc_qprofile(calcproblem, point):
     mlist = [calcproblem] if hasattr(calcproblem, 'fitness') else list(calcproblem.models)
     newvars = [ar.gen_new_variables(Q) for Q in calcproblem.calcQs]
     qprof = list()
-    for m, newvar in zip(mlist, newvars):
+    for mnum, (m, newvar) in enumerate(zip(mlist, newvars)):
         calcproblem.setp(point)
         calcproblem.chisq_str()
+        calcproblem.set_active_model(mnum)
         Rth = ar.calc_expected_R(m.fitness, *newvar, oversampling=calcproblem.oversampling, resolution=calcproblem.resolution)
         qprof.append(Rth)
 
