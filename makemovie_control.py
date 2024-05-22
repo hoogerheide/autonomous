@@ -16,7 +16,7 @@ else:
 outfile = exppath + '/' + expbase.split('.pickle')[0] + '_ctrl'
 
 print('Making movie %s...' % outfile)
-makemovie(exp, outfile, expctrl=expctrl, fps=3, tscale='linear')
+makemovie(exp, outfile, expctrl=expctrl, fps=2, tscale='log')
 
 
 

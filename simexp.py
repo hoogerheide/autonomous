@@ -7,6 +7,7 @@ from bumps.fitters import DreamFit, ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 from bumps.mapper import MPMapper
 from bumps.dream.stats import credible_interval
+from bumps.plotutil import next_color, plot_quantiles
 #from bumps.dream.state import load_state
 #from refl1d.names import FitProblem, Experiment
 from refl1d.resolution import TL2Q, dTdL2dQ
@@ -1408,8 +1409,8 @@ def snapshot(exp, stepnumber, fig=None, power=4, tscale='log'):
         axtopright.plot(allt[j], allH_marg[j], 'o', markersize=15, color='red', alpha=0.4)
         axbotright.plot(allt[j], allH[j], 'o', markersize=15, color='red', alpha=0.4)
     axbotright.set_xlabel('Time (s)')
-    axbotright.set_ylabel(r'$\Delta H_{total}$ (nats)')
-    axtopright.set_ylabel(r'$\Delta H_{marg}$ (nats)')
+    axbotright.set_ylabel(r'$\Delta H_{total}$ (bits)')
+    axtopright.set_ylabel(r'$\Delta H_{marg}$ (bits)')
     tscale = tscale if tscale in ['linear', 'log'] else 'log'
     axbotright.set_xscale(tscale)
     if tscale == 'linear':
@@ -1426,7 +1427,16 @@ def snapshot(exp, stepnumber, fig=None, power=4, tscale='log'):
         #print(*[[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list])
         #idata = [[getattr(pt, attr) for pt in plotpoints] for attr in exp.attr_list]
         idata = [[val for pt in plotpoints for val in getattr(pt, attr)] for attr in exp.attr_list]
-        ar.plot_qprofiles(copy.copy(measQ), qprof, step.draw.logp, data=idata, ax=axtop, power=power)
+        #ar.plot_qprofiles(copy.copy(measQ), qprof, step.draw.logp, data=idata, ax=axtop, power=power)
+        plt.sca(axtop)
+        plot_quantiles(measQ, qprof * measQ ** power, (68, 95), color='C0')
+        if idata is not None:
+            _, _, _, _, Rs, dRs, Qs, _ = ar.compile_data_N(copy.copy(measQ), *idata)
+            #print('plot_qprofiles: ', len(Qs), Qs)
+            if len(Qs) > 0:
+                axtop.errorbar(Qs[0:], (Rs*Qs**power)[0:], (dRs*Qs**power)[0:], fmt='o', color='k', markersize=10, alpha=0.4, capsize=8, linewidth=3, zorder=100)
+
+        axtop.set_yscale('log')
         axtop.set_title(f'meas t = {steptimes[i]:0.0f} s\nmove t = {movetimes[i]:0.0f} s', fontsize='larger')
         axbot.plot(x, fom, linewidth=3, color='C0')
         if (j + 1) < len(exp.steps):
@@ -1465,11 +1475,13 @@ def snapshot(exp, stepnumber, fig=None, power=4, tscale='log'):
 def makemovie(exp, outfilename, expctrl=None, fps=1, fmt='gif', power=4, tscale='log'):
     """ Makes a GIF or MP4 movie from a SimReflExperiment object"""
 
+    import tqdm
+
     fig = plt.figure(figsize=(8 + 4 * exp.nmodels, 8))
 
     frames = list()
 
-    for j in range(len(exp.steps[0:-1])):
+    for j in tqdm.tqdm(range(len(exp.steps[0:-1]))):
 
         fig, (_, _, axtopright, axbotright) = snapshot(exp, j, fig=fig, power=power, tscale=tscale)
 
