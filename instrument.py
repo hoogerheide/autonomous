@@ -59,7 +59,7 @@ class ReflectometerBase(object):
 
     def dT(self, x):
         usesample = True if self.footprint > self.sample_width else False 
-        return divergence(self.get_slits(x), self.get_slit_distances(), T=self.T(x), sample_width=self.sample_width, use_sample=usesample)
+        return divergence(self.get_slits(x), self.get_slit_distances(), T=np.array(self.T(x)), sample_width=self.sample_width, use_sample=usesample)
 
     def L(self, x):
         
@@ -292,4 +292,145 @@ class CANDOR(ReflectometerBase):
     def dL(self, x):
         x = np.array(x, ndmin=1)
         return np.broadcast_to(self._dL, (len(x), len(self._L)))
+    
+
+class LIQREF(ReflectometerBase):
+    """ LIQREF TOF Reflectometer
+    x = integer index of predefined buffers """
+    def __init__(self, bank=0) -> None:
+        super().__init__()
+        
+        self.name = 'LIQREF'
+        self.xlabel = r'Buffer index'
+        self.resolution = 'uniform'
+        self.topspeed = 1./ 40
+        # As of 6/24/2024:
+        # Top velocity: 1.0 deg /  40 sec        
+
+        # instrument geometry
+        self._L12 = 1350.
+        self._L2S = 135.
+        self.footprint = 25.
+        self._R12 = 1.5
+        self.sample_width = np.inf
+
+        # load calibration files
+        self.load_calibration_files()
+
+    def load_calibration_files(self):
+        import glob
+
+        caldata = list()
+        for f in glob.glob('calibration/liqref/*.txt'):
+            Q, L, N, Ne = np.loadtxt(f, unpack=True)
+            with open(f, 'r') as fn:
+                headerdata = fn.readlines()[:3]
+                T = float(headerdata[0].split(':')[-1])
+                s1 = float(headerdata[1].split(':')[-1].split('x')[0])
+                s2 = float(headerdata[2].split(':')[-1].split('x')[0])
+            
+            caldata.append(dict(Q=Q, L=L, N=N, Ne=Ne, T=T, s1=s1, s2=s2))
+
+        caldata.sort(key=lambda c: c['Q'][0])
+
+        self.calibration_data = caldata        
+
+    def get_slits(self, x):
+        x = np.array(x, ndmin=1)
+        s1 = np.array([self.calibration_data[ix]['s1'] for ix in x])
+        s2 = np.array([self.calibration_data[ix]['s2'] for ix in x])
+
+        return s1, s2
+
+    def get_slit_distances(self):
+
+        return -(self._L12 + self._L2S), -self._L2S
+
+    def x2q(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['Q'] for ix in x]
+
+    def x2a(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['T'] for ix in x]
+
+    def qrange2xrange(self, qbounds):
+        qbounds = np.array(qbounds)
+        minx = next(ix for ix, cd in enumerate(self.calibration_data) if cd['Q'][-1] > min(qbounds))
+        maxx = [ix for ix, cd in enumerate(self.calibration_data) if cd['Q'][0] < max(qbounds)][-1]
+        return minx, maxx
+
+    def intensity(self, x):
+
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['N'] for ix in x]
+    
+    def meastime(self, x, totaltime):
+
+        q = a2q(np.array(x), 5.0)
+        f = self._mon0 + self._mon1 * q ** self._Qpow
+
+        return totaltime * f / sum(f)
+    
+    def movetime(self, x):
+        x = np.array(x, ndmin=1)
+        if self.x is None:
+            # if not currently at a position, assume no movement time
+            movetimes = np.zeros_like(x).tolist()
+        
+        else:
+
+            movetimes = []
+            for ix in x:
+                if ix == self.x:
+                    # if the instrument doesn't have to move, move time is zero.
+                    movetimes.append(0)
+                else:
+                    # calculate two-theta movement time
+                    curT = self.calibration_data[self.x]['T']
+                    newT = self.calibration_data[ix]['T']
+                    two_theta_movetime = 2 * abs(curT - newT) / self.topspeed
+
+                    # calculate chopper rephasing time
+                    cur_lowL = self.calibration_data[self.x]['L'][0]
+                    new_lowL = self.calibration_data[ix]['L'][0]
+
+                    if np.isclose(cur_lowL, new_lowL, atol=0.1):
+                        chopper_movetime = 0.0
+                    else:
+                        chopper_movetime = 45.0
+
+                    # choose maximum of chopper rephasing time and two theta movement time
+                    movetimes.append(max(two_theta_movetime, chopper_movetime))
+
+        return movetimes
+
+    def T(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['T'] * np.ones_like(self.calibration_data[ix]['L'])
+                for ix in x]
+
+    def dT(self, x):
+        x = np.array(x, ndmin=1)
+        return [ReflectometerBase.dT(self, ix) * np.ones_like(self.calibration_data[ix]['L'])
+                    for ix in x]
+
+    def L(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['L'] for ix in x]
+
+    def dL(self, x):
+        x = np.array(x, ndmin=1)
+        dLs = []
+        for ix in x:
+            Ls = self.calibration_data[ix]['L']
+            center_points = 0.5 * (Ls[1:] + Ls[:-1])
+            first_center_point = Ls[0] - (center_points[0] - Ls[0])
+            last_center_point = Ls[-1] + (Ls[-1] - center_points[-1])
+            center_points = np.insert(center_points, 0, first_center_point)
+            center_points = np.append(center_points, last_center_point)
+
+            # note that this is not exactly the same as np.diff(Ls) / 2
+            dLs.append(-0.5 * ((Ls - center_points[:-1]) + (center_points[1:] - Ls)))
+        return dLs
     
