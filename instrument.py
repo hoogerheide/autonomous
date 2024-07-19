@@ -302,7 +302,7 @@ class LIQREF(ReflectometerBase):
         
         self.name = 'LIQREF'
         self.xlabel = r'Buffer index'
-        self.resolution = 'uniform'
+        self.resolution = 'normal'
         self.topspeed = 1./ 40
         # As of 6/24/2024:
         # Top velocity: 1.0 deg /  40 sec        
@@ -320,9 +320,16 @@ class LIQREF(ReflectometerBase):
     def load_calibration_files(self):
         import glob
 
+        beam_current = 1.4 # mA
+
         caldata = list()
         for f in glob.glob('calibration/liqref/*.txt'):
             Q, L, N, Ne = np.loadtxt(f, unpack=True)
+
+            # convert counts / mC to counts / s
+            N *= beam_current
+            Ne *= beam_current
+
             with open(f, 'r') as fn:
                 headerdata = fn.readlines()[:3]
                 T = float(headerdata[0].split(':')[-1])
@@ -412,7 +419,7 @@ class LIQREF(ReflectometerBase):
 
     def dT(self, x):
         x = np.array(x, ndmin=1)
-        return [ReflectometerBase.dT(self, ix) * np.ones_like(self.calibration_data[ix]['L'])
+        return [ReflectometerBase.dT(self, ix)[0] * np.ones_like(self.calibration_data[ix]['L'])
                     for ix in x]
 
     def L(self, x):
@@ -432,5 +439,6 @@ class LIQREF(ReflectometerBase):
 
             # note that this is not exactly the same as np.diff(Ls) / 2
             dLs.append(-0.5 * ((Ls - center_points[:-1]) + (center_points[1:] - Ls)))
-        return dLs
+        return [self.calibration_data[ix]['L']*0.02 for ix in x]
+
     
