@@ -5,7 +5,7 @@ import copy
 import os
 from bumps.cli import load_model
 import matplotlib.pyplot as plt
-from simexp import SimReflExperiment, SimReflExperimentControl, makemovie
+from simexp import SimReflExperiment, SimReflExperimentControl, makemovie, snapshot
 import instrument
 import argparse
 #import imageio
@@ -30,6 +30,7 @@ parser.add_argument('--eta', type=float, default=0.8)
 parser.add_argument('--alpha', type=float, default=0.001)
 parser.add_argument('--npoints', type=int, default=1)
 parser.add_argument('--nrepeats', type=int, default=1)
+parser.add_argument('--min_meas_time', type=float, default=10)
 parser.add_argument('--maxtime', type=float, default=21.6e3)
 parser.add_argument('--penalty', type=float, default=1.0)
 parser.add_argument('--timepenalty', type=float, default=0.0)
@@ -65,8 +66,10 @@ if __name__ == '__main__':
 #            instr._mon0 = 0.0
         elif args.instrument == 'CANDOR':
             instr = instrument.CANDOR()
+        elif args.instrument == 'LIQREF':
+            instr = instrument.LIQREF()
         else:
-            raise ValueError('instrument must be MAGIK or CANDOR')
+            raise ValueError('instrument must be MAGIK or CANDOR or LIQREF')
 
         fprefix = '%s_eta%0.2f_npoints%i_repeats%i' % (instr.name, args.eta, args.npoints, args.nrepeats) \
                     if not args.control else instr.name + '_control'
@@ -98,11 +101,15 @@ if __name__ == '__main__':
         measQ = (args.qmin-args.qstep) + np.cumsum(dq)
         #measQ = [m.fitness.probe.Q for m in model.models]
 
+        if args.instrument == 'LIQREF':
+            measx = np.arange(len(instr.calibration_data))
+            measQ = np.sort(np.unique([iiq for iq in instr.x2q(measx) for iiq in iq]))
+
         # simulated experiment
         if not args.control:
 
             for kk in range(args.nrepeats):
-                exp = SimReflExperiment(model, measQ, instrument=instr, eta=args.eta, fit_options=fit_options, oversampling=args.oversampling, bestpars=bestp, select_pars=sel, meas_bkg=meas_bkg, switch_penalty=args.penalty, npoints=args.npoints, entropy_options=entropy_options)
+                exp = SimReflExperiment(model, measQ, instrument=instr, eta=args.eta, fit_options=fit_options, oversampling=args.oversampling, bestpars=bestp, select_pars=sel, meas_bkg=meas_bkg, switch_penalty=args.penalty, npoints=args.npoints, entropy_options=entropy_options, min_meas_time=args.min_meas_time)
                 exp.switch_time_penalty = args.timepenalty # takes time to switch models
                 if args.instrument == 'MAGIK':
                     exp.x = exp.measQ
@@ -120,6 +127,9 @@ if __name__ == '__main__':
                         x[-1] = xrng[1]
                         x = np.array(x)
                         exp.x[i] = x
+                elif args.instrument == 'LIQREF':
+                    for i, _ in enumerate(exp.measQ):
+                        exp.x[i] = np.arange(len(instr.calibration_data))
 
                 exp.add_initial_step()
                 total_t = 0.0
@@ -129,8 +139,12 @@ if __name__ == '__main__':
                     print('Rep: %i, Step: %i, Total time so far: %0.1f' % (kk, k, total_t))
                     exp.fit_step()
                     #exp.instrument.x = None # to turn off movement penalty
-                    exp.take_step(allow_repeat=False)
+                    exp.take_step(allow_repeat=True)
                     exp.save(pathname + '/exp%i.pickle' % kk)
+                    if k > 1:
+                        fig, _ = snapshot(exp, -2)
+                        fig.savefig('latest_snapshot.png')
+                        del fig
                     k += 1
 
                 if not args.nomovie:
