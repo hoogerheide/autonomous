@@ -381,6 +381,8 @@ class SimReflExperiment(object):
         self.update_models()
 
         # Set attributes of "problem" for passing into multiprocessing routines
+        newvars = [self.instrument.Q2TdTLdL(mQ, mx, mQ) for mQ, mx in zip(self.measQ, self.x)]
+        setattr(self.problem, 'calcTdTLdL', newvars)
         setattr(self.problem, 'calcQs', self.measQ)
         setattr(self.problem, 'oversampling', self.oversampling)
         setattr(self.problem, 'resolution', self.instrument.resolution)
@@ -695,15 +697,27 @@ class SimReflExperiment(object):
         intens_shapes = list()
         qs = list()
         xqprofs = list()
+        inference_correction = list() # correction based on failure to match inferred function uncertainty to data uncertainty
         init_time = time.time()
-        for xs, Qth, qprof, qbkg in zip(self.x, self.measQ, qprofs, self.meas_bkg):
+        reshape_list = False
+        for xs, Qth, qprof, qbkg, m in zip(self.x, self.measQ, qprofs, self.meas_bkg, self.models):
 
             # get the incident intensity and q values for all x values (should have same shape X x D).
-            # flattened dimension is XD
             incident_neutrons = self.instrument.intensity(xs)
-            init_shape = incident_neutrons.shape
-            incident_neutrons = incident_neutrons.flatten()
-            q = self.instrument.x2q(xs).flatten()
+            # if ragged list (TOF instrument)
+            # flattened dimension is sum of # q bins over all instrument configurations            
+            if isinstance(incident_neutrons, list):
+                reshape_list = True
+                init_shape = [len(iin) for iin in incident_neutrons]
+                incident_neutrons = np.array([iiin for iin in incident_neutrons for iiin in iin])
+                q = np.array([iiq for iq in self.instrument.x2q(xs) for iiq in iq])
+
+            # else numpy array (MAGIK, CANDOR)
+            # flattened dimension is XD            
+            else:
+                init_shape = incident_neutrons.shape
+                incident_neutrons = incident_neutrons.flatten()
+                q = self.instrument.x2q(xs).flatten()
 
             # define signal to background. For now, this is just a scaling factor on the effective rate
             # reference: Hoogerheide et al. J Appl. Cryst. 2022
@@ -714,6 +728,34 @@ class SimReflExperiment(object):
             # perform interpolation. xqprof should have shape N x XD. This is a slow step (and should only be done once)
             interp_refl = interp1d(Qth, refl, axis=1, fill_value=(refl[:,0], refl[:,-1]), bounds_error=False)
             xqprof = np.array(interp_refl(q))
+
+            # check if there is a mismatch between data dR and theory dR
+            Rth, dRth = np.median(xqprof, axis=0), np.std(xqprof, axis=0)  
+            print(len(q), len(Rth))          
+            Q, dQ, R, dR, resolution = m.fitness.probe.Q, m.fitness.probe.dQ, m.fitness.probe.R, m.fitness.probe.dR, m.fitness.probe.resolution
+            iinference_correction = np.ones_like(q)
+            dRth_interp = np.interp(Q, q, dRth)
+            for iQ, idQ, iR, idR, idRth in zip(Q, dQ, R, dR, dRth_interp):
+
+                # calculate correction magnitude (zero if they match or if theory is tighter than data)
+                corr_magnitude = max(1, (idRth / idR) ** 2) - 1
+                if resolution == 'normal':
+                    corr = (corr_magnitude * np.exp(-(q - iQ) ** 2 / (2* idQ ** 2)) + 1)
+                elif resolution == 'uniform':
+                    corr = np.ones_like(q)
+                    corr[np.abs(q - iQ) < 0.5 * idQ] = corr_magnitude + 1
+                
+                iinference_correction /= corr
+
+            fig, (axtop, axbot) = plt.subplots(2, 1, sharex=True, figsize=(6, 8))
+            axtop.errorbar(Q, R, dR, dQ)
+            axtop.plot(q, Rth + dRth)
+            axtop.plot(q, Rth - dRth)
+            axtop.set_yscale('log')
+            axbot.plot(q, iinference_correction)
+            plt.show()
+
+            inference_correction.append(iinference_correction)
 
             intensities.append(incident_neutrons)
             intens_shapes.append(init_shape)
@@ -751,7 +793,7 @@ class SimReflExperiment(object):
 
             all_H0.append(H0)
             # cycle though models
-            for incident_neutrons, init_shape, q, xqprof in zip(intensities, intens_shapes, qs, xqprofs):
+            for incident_neutrons, init_shape, q, xqprof, iinference_correction in zip(intensities, intens_shapes, qs, xqprofs, inference_correction):
 
                 #init_time2a = time.time()
                 # TODO: Shouldn't these already be sorted by the second step?
@@ -760,7 +802,7 @@ class SimReflExperiment(object):
                 #print(idxs.shape)
 
                 # Select new points and indices in CI. Now has dimension M x XD X P
-                A = np.take_along_axis(pts[:, None, :], idxs[:, :, None], axis=0)[minci_sel:maxci_sel]
+                #A = np.take_along_axis(pts[:, None, :], idxs[:, :, None], axis=0)[minci_sel:maxci_sel]
                 
                 #init_time2a = time.time()
                 # calculate new index arrays and xqprof values
@@ -776,56 +818,81 @@ class SimReflExperiment(object):
                 #sel_sigma = 0.5 * np.diff(np.take_along_axis(xqprof, idxs[[minci_sel, maxci_sel],:], axis=0), axis=0)
                 #meas_sigma = 0.5 * np.diff(np.take_along_axis(xqprof, idxs[[minci_meas, maxci_meas],:], axis=0), axis=0)
 
-                init_time2 = time.time()
+                #init_time2 = time.time()
 
                 # Condition shape (now has dimension M X P X XD)
-                A = np.moveaxis(A, -1, 1)
-                Hs, _, predictor = calc_entropy(A, None, options=self.entropy_options, predictor=predictor)
+                #A = np.moveaxis(A, -1, 1)
+                #Hs, _, predictor = calc_entropy(A, None, options=self.entropy_options, predictor=predictor)
 
                 # Calculate measurement times (shape XD)
                 med = np.median(xqprof, axis=0)
                 xrefl_sel = (incident_neutrons * med * (sel_sigma / med) ** 2)
                 xrefl_meas = (incident_neutrons * med * (meas_sigma / med) ** 2)
                 meastime_sel = 1.0 / xrefl_sel
-                meastime_meas = 1.0 / xrefl_meas
+                meastime_meas = 1.0 / xrefl_meas / iinference_correction
 
                 # apply min measurement time (turn this off initially to test operation)
                 #meastime = np.maximum(np.full_like(meastime, self.min_meas_time), meastime)
+                #newidx = newidx.T.tolist()
 
-                if correct_meastime:
-                    for k, (imeastime, iincident_neutrons, imed, ixqprof, isel_sigma) in enumerate(zip(meastime_sel, incident_neutrons, med, xqprof.T, sel_sigma)):
-                        if imeastime < self.min_meas_time:
-                            #print(i, imeastime, iincident_neutrons, imed, ixqprof.shape, isel_sigma)
-                            newsigma = (imed / (iincident_neutrons * self.min_meas_time)) ** 0.5
-                            #print(newsigma)
-                            newcrit = np.abs(ixqprof - imed) < 2 * newsigma
+                Hs = []
+                fom = []
+                meas_time = []
+                chosen_idx = []
+                curposidx = 0
 
-                            # if not enough points to make determination, don't measure there
-                            if sum(newcrit) < 3:
-                                Hs[k] = H0
-                            else:
-                                #print(sum(newcrit), pts[newcrit, :].shape)
-                                newH = calc_entropy(pts[newcrit, :], None, options=self.entropy_options, predictor=predictor)[0]
-                                #print('Old H: ', Hs[i], 'New H: ', newH)
-                                Hs[k] = newH
-                            
-                            meastime_sel[k] = self.min_meas_time
+                # cycle through x values
+                for npts in init_shape:
+                    
+                    # select appropriate range from flattened arrays
+                    crit = range(curposidx, (curposidx + npts))
 
-                            
+                    # actual measurement time
+                    #mt = 1./np.sum(1./meastime_meas[crit])
+                    # for set intersection approach, don't want to exclude too many samples in each calculation, especially for multi-Q experiments
+                    # where it's easy to exclude all of the samples with too long of a measurement time
+                    mt = min(meastime_meas[crit])
+                    if mt < self.min_meas_time / 10:
+                        mt *= 10
+                    #mt = max(self.min_meas_time, np.average(meastime_meas[crit]))
 
-                # figure of merit is dHdt (reshaped to X x D)
-                dHdt = (H0 - Hs) / meastime_sel
-                dHdt = np.reshape(dHdt, init_shape)
+                    newidx = []
+                    chosen = set(range(N))
 
-                # calculate fom and average time (shape X)
-                fom = np.sum(dHdt, axis=1)
-                meas_time = 1./ np.sum(1./np.reshape(meastime_meas, init_shape), axis=1)
+                    # cycle through points and determine which samples will be preserved
+                    for k, (iincident_neutrons, imed, imeas_sigma, ixqprof, iidxs) in enumerate(zip(incident_neutrons[crit], med[crit], meas_sigma[crit], xqprof.T[crit], idxs.T[crit])):
+                        newsigma = (imed / (iincident_neutrons * mt)) ** 0.5
+                        newcrit = np.abs(ixqprof - imed) < newsigma
+                        #print(k, mt, imed, newsigma, np.std(ixqprof), imeas_sigma, sum(newcrit))
+                        minci_corr, maxci_corr =  int(np.floor((len(iidxs) - sum(newcrit)) / 2)), int(np.ceil((len(iidxs) + sum(newcrit)) / 2))
+                        newidx.append(iidxs[minci_corr:maxci_corr])
+                        chosen.intersection_update(set(iidxs[minci_corr:maxci_corr]))
+                        #print(k, len(iidxs[minci_corr:maxci_corr]))
 
-                Hlist.append(Hs)
-                foms.append(fom)
-                meas_times.append(meas_time)
-                newxqprofs.append(meas_xqprof)
-                newidxs_meas.append(newidx)
+                    # flatten index array corresponding to remaining values at this x position
+                    idx_array = [v
+                                for nmm in newidx
+                                for v in nmm]
+                    freq = np.bincount(idx_array, minlength=len(pts))
+                    freqsort = np.argsort(freq)
+                    altchosen = freqsort[freq == npts]
+                    chosen = list(chosen)
+                    print(npts, len(chosen), len(freqsort[freq==npts]))
+
+                    newH = calc_entropy(pts[chosen], None, options=self.entropy_options, predictor=predictor)[0]
+                    Hs.append(newH)
+                    actual_mt = max(self.min_meas_time, mt)
+                    meas_time.append(actual_mt)
+                    fom.append((H0 - newH)/mt if (len(chosen) > 10) else 0)
+                    chosen_idx.append(chosen)
+                    curposidx += npts
+
+                Hlist.append(np.array(Hs))
+                foms.append(np.array(fom))
+                meas_times.append(np.array(meas_time))
+                print(H0, Hs, meas_time, fom)
+                #newxqprofs.append(meas_xqprof)
+                newidxs_meas.append(chosen_idx)
                 
             # populate higher-level lists
             all_foms.append(foms)
@@ -839,6 +906,16 @@ class SimReflExperiment(object):
             if (not allow_repeat) & (self.instrument.x is not None):
                 curidx = np.where(self.x[self.curmodel]==self.instrument.x)[0][0]
                 scaled_foms[self.curmodel][curidx] = 0.0
+
+            fig = plt.figure()
+            for xs, fom, sfom in zip(self.x, foms, scaled_foms):
+                plt.plot(xs, fom)
+                plt.plot(xs, sfom, '--')
+            
+            fig.savefig('latest_foms.png')
+            fig.clf()
+            plt.close(fig)
+            del fig
 
             # perform point selection
             top_n = self._find_fom_maxima(scaled_foms, start=0)
@@ -856,27 +933,17 @@ class SimReflExperiment(object):
             self.instrument.x = newx
             self.curmodel = mnum
 
-            # choose new points. This is not straightforward if there is more than one detector, because
-            # each point in XD may choose a different detector. We will choose without replacement by frequency.
-            # idx_array has shape M x D
-            idx_array = newidxs_meas[mnum].reshape(-1, *intens_shapes[mnum])[:, idx, :]
-            #print(idx_array.shape)
-            if idx_array.shape[1] == 1:
-                # straightforward case, with 1 detector
-                chosen = np.squeeze(idx_array)
-            else:
-                # select those that appear most frequently
-                #print(idx_array.shape)
-                freq = np.bincount(idx_array.flatten(), minlength=len(pts))
-                freqsort = np.argsort(freq)
-                chosen = freqsort[-idx_array.shape[0]:]
-                
+            chosen = newidxs_meas[mnum][idx]
+            print(len(chosen))
             newpts = pts[chosen]
             newxqprofs = [xqprof[chosen] for xqprof in xqprofs]
 
             # set up next iteration
             xqprofs = newxqprofs
             pts = newpts
+            if len(chosen) < 10:
+                print(len(chosen))
+                break
 
             print(f'Forecast step {i}:\tNumber of samples: {N}\tCalculation time: {time.time() - init_time}')
 
@@ -1093,7 +1160,7 @@ class SimReflExperiment(object):
 
         # condition the maximum indices
         maxidxs_m = [[fom, m, idx] for m, (idxs, mfoms) in enumerate(zip(maxidxs, maxfoms)) for idx, fom in zip(idxs, mfoms)]
-        #print(maxidxs_m)
+        print(maxidxs_m)
         # select top point
         top_n = sorted(maxidxs_m, reverse=True)[start:min(start+1, len(maxidxs_m))][0]
 
@@ -1127,7 +1194,7 @@ class SimReflExperiment(object):
 
         calcR = ar.calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
         #print('expected R:', calcR)
-        incident_neutrons = self.instrument.intensity(newx) * new_meastime
+        incident_neutrons = np.array(self.instrument.intensity(newx)) * new_meastime
         N, Nbkg, Ninc = ar.sim_data_N(calcR, incident_neutrons, resid_bkg=self.resid_bkg[mnum], meas_bkg=self.meas_bkg[mnum])
         
         return DataPoint(newx, new_meastime, mnum, (T, dT, L, dL, N[0], Nbkg[0], Ninc[0]), merit=maxfom)
@@ -1287,7 +1354,7 @@ def _calc_qprofile(calcproblem, point):
     mlist = [calcproblem] if hasattr(calcproblem, 'fitness') else list(calcproblem.models)
     newvars = [ar.gen_new_variables(Q) for Q in calcproblem.calcQs]
     qprof = list()
-    for m, newvar in zip(mlist, newvars):
+    for m, newvar in zip(mlist, calcproblem.calcTdTLdL):
         calcproblem.setp(point)
         calcproblem.chisq_str()
         Rth = ar.calc_expected_R(m.fitness, *newvar, oversampling=calcproblem.oversampling, resolution=calcproblem.resolution)
