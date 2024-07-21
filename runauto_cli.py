@@ -143,7 +143,7 @@ if __name__ == '__main__':
                     exp.save(pathname + '/exp%i.pickle' % kk)
                     if k > 1:
                         fig, _ = snapshot(exp, -2)
-                        fig.savefig('latest_snapshot.png')
+                        fig.savefig('s_latest_snapshot.png')
                         del fig
                     k += 1
 
