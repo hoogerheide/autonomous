@@ -537,11 +537,11 @@ class LIQREF(ReflectometerBase):
 
         # Combine wavelengths
         sum_L = np.bincount(bin_index, weights=_L, minlength=nbins)
-        sum_dLsq = np.bincount(bin_index, weights=(_dL**2+_L**2), minlength=nbins)
+        #sum_dLsq = np.bincount(bin_index, weights=(_dL**2+_L**2), minlength=nbins)
         sum_dL = np.bincount(bin_index, weights=_dL**2, minlength=nbins)
         bar_L = sum_L/sum_w
-        bar_dL = np.sqrt(sum_dLsq/sum_w - (sum_L/sum_w)**2)
-        #bar_dL = np.sqrt(sum_dL/sum_w)
+        #bar_dL = np.sqrt(sum_dLsq/sum_w - (sum_L/sum_w)**2)
+        bar_dL = np.sqrt(sum_dL/sum_w)
 
         # Combine angles
         sum_T = np.bincount(bin_index, weights=_T, minlength=nbins)
