@@ -1281,6 +1281,7 @@ class SimReflExperimentControl(SimReflExperiment):
         """
 
         points = list()
+        switchtime = 0.0
         #TODO: Make this into a (Q to points) function
         for mnum, (newx, mtimeweight, meas_bkg, resid_bkg) in enumerate(zip(self.x, self.meastimeweights, self.meas_bkg, self.resid_bkg)):
 
@@ -1294,8 +1295,12 @@ class SimReflExperimentControl(SimReflExperiment):
                 calcR = ar.calc_expected_R(self.calcmodels[mnum].fitness, T, dT, L, dL, oversampling=self.oversampling, resolution='normal')
             #print('expected R:', calcR)
                 N, Nbkg, Ninc = ar.sim_data_N(calcR, intens.T * t, resid_bkg=resid_bkg, meas_bkg=meas_bkg)
-                points.append(DataPoint(x, t, mnum, (T, dT, L, dL, N, Nbkg, Ninc), movet=self.instrument.movetime(x)[0]))
+                points.append(DataPoint(x, t, mnum, (T, dT, L, dL, N, Nbkg, Ninc), movet=self.instrument.movetime(x)[0] + switchtime))
                 self.instrument.x = x
+                switchtime = 0.0
+            
+            # if about to switch models, add the switch time penalty
+            switchtime = self.switch_time_penalty
         
         self.add_step(points)
 
