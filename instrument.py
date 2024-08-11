@@ -375,7 +375,7 @@ class LIQREF(ReflectometerBase):
     def load_calibration_files(self):
         import glob
 
-        beam_current = 1.4 # mA
+        beam_current = 1./0.656 # s / mC
 
         caldata = list()
         for f in glob.glob('calibration/liqref/*.txt'):
@@ -494,7 +494,8 @@ class LIQREF(ReflectometerBase):
 
             # note that this is not exactly the same as np.diff(Ls) / 2
             dLs.append(-0.5 * ((Ls - center_points[:-1]) + (center_points[1:] - Ls)))
-        return [self.calibration_data[ix]['L']*0.02 for ix in x]
+        #return [self.calibration_data[ix]['L']*0.02 for ix in x]
+        return dLs
 
     def Q2TdTLdL(self, qs, measx, measQ):
         """
@@ -554,4 +555,4 @@ class LIQREF(ReflectometerBase):
         #res = [(bar_T[idx], bar_dT[idx], bar_L[idx], bar_dL[idx]) for idx in idxs]
 
         return (bar_T[idxs], bar_dT[idxs], bar_L[idxs], bar_dL[idxs])
-    
+  
