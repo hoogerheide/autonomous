@@ -6,6 +6,7 @@ import os
 from bumps.cli import load_model
 import matplotlib.pyplot as plt
 from simexp import SimReflExperiment, SimReflExperimentControl, makemovie, snapshot
+from autorefl import calc_expected_R, a2q
 import instrument
 import argparse
 #import imageio
@@ -102,7 +103,9 @@ if __name__ == '__main__':
         #measQ = [m.fitness.probe.Q for m in model.models]
 
         if args.instrument == 'LIQREF':
-            measx = np.arange(len(instr.calibration_data))
+            first_index = next((i for i in range(len(instr.calibration_data))[::-1] if instr.calibration_data[i]['Q'][0]<args.qmin), 0)
+            last_index = next((i for i in range(len(instr.calibration_data)) if instr.calibration_data[i]['Q'][-1]>args.qmax), len(instr.calibration_data) - 1)
+            measx = np.arange(first_index, last_index + 1)
             measQ = np.sort(np.unique([iiq for iq in instr.x2q(measx) for iiq in iq]))
 
         # simulated experiment
@@ -129,7 +132,7 @@ if __name__ == '__main__':
                         exp.x[i] = x
                 elif args.instrument == 'LIQREF':
                     for i, _ in enumerate(exp.measQ):
-                        exp.x[i] = np.arange(len(instr.calibration_data))
+                        exp.x[i] = measx
 
                 exp.add_initial_step()
                 total_t = 0.0
@@ -190,10 +193,37 @@ if __name__ == '__main__':
                         exp.meastimeweights.append(weight * np.array(x)**2 / np.sum(np.array(x)**2))
 
                     print(exp.x, len(exp.x[0]))
+                elif args.instrument == 'LIQREF':
+                    for i, _ in enumerate(exp.measQ):
+                        exp.x[i] = measx
+
+                    model_weights = np.array(model_weights) / np.sum(model_weights)
+
+                    exp.meastimeweights = list()
+                    for x, weight, m, bkg in zip(exp.x, model_weights, exp.calcmodels, exp.meas_bkg):
+                        xweights = []
+                        #plt.figure()
+                        for ix, count_to in zip(x, [6000, 6000, 6000, 6000, 18000, 18000, 72000, 75000]):
+                            T, dT, L, dL = instr.T(ix)[0], instr.dT(ix)[0], instr.L(ix)[0], instr.dL(ix)[0]
+                            R = calc_expected_R(m.fitness, T, dT, L, dL, exp.oversampling, m.fitness.probe.resolution)
+                            #Q = a2q(T, L)
+                            #plt.semilogy(Q, R + bkg)
+                            incident_neutrons = instr.intensity(ix)[0]
+                            #print(ix, T, dT, L, dL, R, incident_neutrons)
+                            expected_count_rate = sum(incident_neutrons * (R + bkg))
+                            #print(count_to, expected_count_rate)
+                            xweights.append(count_to / expected_count_rate) # total time to reach expected rate
+
+                        xweights = np.array(xweights)
+                        #plt.show()
+
+                        exp.meastimeweights.append(weight * xweights / np.sum(xweights))
+
 
                 total_t = 0.0
                 k = 0
                 for meastime in meastimes:
+                    exp.instrument.x = None
                     exp.take_step(meastime)
                     total_t += exp.steps[-1].meastime() + exp.steps[-1].movetime()
                     print('Rep: %i, Step: %i, Total time so far: %0.1f' % (kk, k, total_t))
@@ -218,7 +248,7 @@ if __name__ == '__main__':
             print('Resumed, Step: %i, Total time so far: %0.1f' % (k, total_t))
             exp.fit_step()
             #exp.instrument.x = None # to turn off movement penalty
-            exp.take_step(allow_repeat=False)
+            exp.take_step(allow_repeat=True)
             exp.save(pathname + '/' + basename + '_resume.pickle')
             k += 1
 
