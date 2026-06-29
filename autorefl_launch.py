@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from remote.nicedata import NICECampaignTask, Signaller
-from remote.monitor import SocketServer, buttonhandler
+from remote.monitor import SocketServer, buttonhandler, emit_history
 
 from autorefl.autorefl import AutoReflExperiment
 from autorefl.calibration import calibrate_intensity
@@ -117,10 +117,32 @@ class AutoReflLauncher:
             await self.exp.fit_step(self.client, warm_start=warm_start)
             warm_start = True
 
-            print('AutoLauncher: final chi-squared:', self.exp.steps[-1].final_chisq)
+            step = self.exp.steps[-1]
+            print('AutoLauncher: final chi-squared:', step.final_chisq)
+
+            # emit posterior R(Q) credible intervals
+            await emit_history('autorefl_profiles', self.update_plot_profiles(step.qprofs))
+            # emit reduced R(Q) data
+            await emit_history('autorefl_data', self.update_plot_data())
+            # emit convergence trace (entropy + chisq across all steps so far)
+            convergence = [
+                {'step': i, 'dH': s.dH, 'dH_marg': s.dH_marg, 'chisq': s.final_chisq}
+                for i, s in enumerate(self.exp.steps)
+                if s.dH is not None
+            ]
+            await emit_history('autorefl_convergence', json.dumps(convergence))
 
             print('AutoLauncher: calculating FOM')
             points = await asyncio.to_thread(self.exp.take_step, allow_repeat=False)
+
+            # emit FOM landscape for the step just completed
+            step = self.exp.steps[-1]
+            if step.foms is not None:
+                fom_data = [
+                    {'model': m, 'x': list(self.exp.x[m]), 'fom': list(fom.tolist())}
+                    for m, fom in enumerate(step.foms)
+                ]
+                await emit_history('autorefl_fom', json.dumps(fom_data))
 
             print('AutoLauncher: saving')
             await asyncio.to_thread(self.exp.save, self.pathname + '/autoexp0.pickle')
