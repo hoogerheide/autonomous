@@ -1,5 +1,6 @@
 from typing import List, Dict, Callable
 
+import asyncio
 import time
 from threading import Event, Timer
 from remote.util import StoppableThread
@@ -31,57 +32,60 @@ def blocking(func):
 
 class Signaller:
     """
-    Container class for all required events, conditions, and queues
+    Container class for all required asyncio events and queues.
+
+    All primitives are asyncio-native; create inside a running event loop
+    (e.g. at the top of an async def, or via asyncio.run()).
     """
 
     def __init__(self) -> None:
 
         ### Events
 
-        # Starts the measurement loop (may not be necessary)
-        self.global_start = Event()
+        # Starts the measurement loop
+        self.global_start = asyncio.Event()
 
         # Stops the measurement loop
-        self.global_stop = Event()
+        self.global_stop = asyncio.Event()
 
         # Signals that the measurement queue has been updated
-        self.measurement_queue_updated = Event()
+        self.measurement_queue_updated = asyncio.Event()
 
         # Signals that a new data point has been acquired
-        self.new_data_acquired = Event()
+        self.new_data_acquired = asyncio.Event()
 
         # Signals that a new data point has been acquired
-        self.new_data_processed = Event()
+        self.new_data_processed = asyncio.Event()
 
         # Signals that a new trajectory definition has been acquired
-        self.new_trajectory_acquired = Event()
+        self.new_trajectory_acquired = asyncio.Event()
 
         # Signals that the measurement queue is empty (more data needed)
-        self.measurement_queue_empty = Event()
+        self.measurement_queue_empty = asyncio.Event()
 
         # Signals that an analysis fit has converged (use if fitting process is split)
-        self.fit_converged = Event()
+        self.fit_converged = asyncio.Event()
 
         # Signals that the first measurement is complete after updating the measurement queue
-        self.first_measurement_complete = Event()
+        self.first_measurement_complete = asyncio.Event()
 
         ### Queues
 
-        # Current instrument position (initialized to None)
-        self.current_instrument_x = Queue(maxsize=1)
-        self.current_instrument_x.put(None)
+        # Current instrument position (None = unknown)
+        self.current_instrument_x: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self.current_instrument_x.put_nowait(None)
 
         # Measurement point queue (frequently flushed and updated after each analysis step)
-        self.measurement_queue = Queue()
+        self.measurement_queue: asyncio.Queue = asyncio.Queue()
 
         # Queue for storing information about current measurement
-        self.current_measurement = Queue()
+        self.current_measurement: asyncio.Queue = asyncio.Queue()
 
         # Data queue for temporarily storing new data points
-        self.data_queue = Queue()
+        self.data_queue: asyncio.Queue = asyncio.Queue()
 
         # Trajectory queue for storing new trajectory definitions (should not be needed)
-        self.trajectory_queue = Queue()
+        self.trajectory_queue: asyncio.Queue = asyncio.Queue()
 
         
 class DataQueueListener(StoppableThread):
@@ -163,6 +167,98 @@ class DataQueueListener(StoppableThread):
         # does this to achieve instant stopping. Ugly, but prevents having to wait on
         # more than one event
         self.signals.new_data_acquired.set()
+
+class NICECampaignTask(Task):
+    """Single long-lived NICE Task covering the full AutoRefl campaign.
+
+    Runs inside a NICE thread (via ``api.serve_tasks``). The asyncio event
+    loop communicates with it via thread-safe ``queue.Queue`` / ``threading.Event``.
+
+    Typical wiring::
+
+        task = NICECampaignTask(motors, filename)
+        launcher.measure_step = task.measure
+        await asyncio.gather(
+            asyncio.to_thread(api.serve_tasks, task),
+            launcher.run(),
+        )
+    """
+
+    def __init__(self, motors_to_move: List[str], filename: str) -> None:
+        self.motors_to_move = motors_to_move + ['counter', 'pointDetector']
+        self.filename = filename
+        self.last_x = None
+
+        # Thread-safe channels between asyncio loop and NICE thread
+        self._points_in: Queue = Queue()   # asyncio → NICE thread
+        self._data_out: Queue = Queue()    # NICE thread → asyncio
+        self._stop_event: Event = Event()
+        self._active_count = None
+
+    async def measure(self, points: List[List['MeasurementPoint']]) -> Dict[int, List['DataPoint']]:
+        """Async callable for the event loop: submit points, await data back."""
+        self._points_in.put(points)
+        return await asyncio.to_thread(self._data_out.get)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._points_in.put(None)  # unblock any waiting get()
+        if self._active_count is not None and not self._active_count.isFinished():
+            self.api.terminateCount()
+
+    def run(self) -> None:
+        self.api.measurement_start(control_nodes=self.motors_to_move, title='autorefl')
+        try:
+            while not self._stop_event.is_set():
+                points = self._points_in.get()
+                if points is None:
+                    break
+                data: Dict[int, List['DataPoint']] = {}
+                cancelled = False
+                for point_list in points:
+                    for pt in point_list:
+                        if self._stop_event.is_set():
+                            cancelled = True
+                            break
+                        self._move_count(pt, data)
+                    if cancelled:
+                        break
+                self._data_out.put(data)
+        finally:
+            self.api.measurement_end()
+
+    def _move_count(self, pt: 'MeasurementPoint', data: Dict[int, List['DataPoint']]) -> None:
+        init_time = time.time()
+        self.api.move(pt.movements)
+        pt.base.movet = time.time() - init_time
+        self.last_x = pt.base.x
+        self._count(pt, data)
+
+    def _count(self, pt: 'MeasurementPoint', data: Dict[int, List['DataPoint']]) -> None:
+        self._active_count = self.api.measurement_count(
+            filePrefix=self.filename,
+            entry=pt.base.intent,
+            presetTime=pt.base.t,
+            wait=False,
+        )
+        self.api.wait(self._active_count)
+        self._active_count = None
+
+        detector = self.api.read('counter.countAgainstDetector')
+        counts = [int(c) for c in self.api.read(f'{detector}.counts')]
+        if pt.bank is not None:
+            strides = self.api.read(f'{detector}.strides')
+            small_stride = int(strides[0])
+            counts = counts[int(pt.bank)::(small_stride + 1)]
+        livetime = float(self.api.read('counter.liveTime'))
+
+        datapoint = pt.base
+        basedata = list(datapoint.data)
+        basedata[data_attributes.index('N')] = np.array(counts, ndmin=1)
+        datapoint.data = basedata
+        datapoint.t = livetime
+        data.setdefault(pt.step_id, []).append(datapoint)
+
 
 class MeasurementDevice(StoppableThread):
 

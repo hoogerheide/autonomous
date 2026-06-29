@@ -1,12 +1,13 @@
-import numpy as np
+import asyncio
+import base64
 import copy
 import time
 import dill
-from typing import Tuple, Union, List
+import numpy as np
+from typing import Tuple, Union, List, Optional, TYPE_CHECKING
 from threading import Event, Semaphore
 from queue import Queue
 
-from bumps.fitters import ConsoleMonitor, _fill_defaults, StepMonitor
 from bumps.initpop import generate
 
 from refl1d.names import FitProblem, Experiment
@@ -16,9 +17,12 @@ from scipy.interpolate import interp1d
 from entropy import calc_entropy, calc_init_entropy, default_entropy_options
 from .datastruct import DataPoint, ExperimentStep, Intent, MeasurementPoint
 from .reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
-from .inference import MPMapper, _MP_calc_qprofile, DreamFitPlus, default_fit_options
+from .inference import MPMapper, _MP_calc_qprofile, default_fit_options
 from .simulation import sim_data_N, calc_expected_R
 from . import instrument
+
+if TYPE_CHECKING:
+    from refl_analysis.remote import Refl1DClient
 
 class AutoReflBase(object):
     """
@@ -265,62 +269,105 @@ class AutoReflBase(object):
 
         return qprofs
 
-    def fit_step(self, abort_test=lambda: False, monitors=None) -> None:
-        """Analyzes most recent step"""
-        
-        # Update models
+    async def fit_step(self, client: "Refl1DClient", warm_start: bool = False) -> None:
+        """Analyze the most recent step using a remote Refl1D/Bumps server.
+
+        Pass warm_start=False on the first call (cold DREAM start with lhs init).
+        Pass warm_start=True on every subsequent call so DREAM resumes from the
+        existing chain population rather than re-initialising.
+        """
         self.update_models()
 
-        # Set attributes of "problem" for passing into multiprocessing routines
-        newvars = [self.instrument.Q2TdTLdL(mQ, mx, mQ) for mQ, mx in zip(self.measQ, self.x)]
-        setattr(self.problem, 'calcTdTLdL', newvars)
-        setattr(self.problem, 'oversampling', self.oversampling)
-        setattr(self.problem, 'resolution', self.instrument.resolution)
+        from bumps.webview.server.state_hdf5_backed import serialize_problem
+        serialized = await asyncio.to_thread(serialize_problem, self.problem)
 
-        # initialize mappers for Dream fit and for Q profile calculations
-        mapper = MPMapper.start_mapper(self.problem, None, cpus=0)
+        step_label = f"autorefl_step_{len(self.steps)}"
+        ok = await client.submit_serialized_problem(serialized, name=step_label, warm_start=warm_start)
+        if not ok:
+            raise RuntimeError("Remote server rejected the serialized problem.")
 
-        # set output stream
-        if monitors is None:
-            monitors = [ConsoleMonitor(self.problem)]
-        
-        # Condition and run fit
-        fitter = DreamFitPlus(self.problem)
-        options=_fill_defaults(self.fit_options, fitter.settings)
-        result = fitter.solve(mapper=mapper, monitors=monitors, abort_test=abort_test, initial_population=self.restart_pop, **options)
+        fit_options = {
+            "samples": self.fit_options.get("steps", 500) * self.fit_options.get("pop", 10),
+            "burn": self.fit_options.get("burn", 1000),
+            "pop": self.fit_options.get("pop", 10),
+            "init": self.fit_options.get("init", "lhs"),
+        }
+        ok = await client.initiate_dream_fit(options=fit_options, resume=warm_start)
+        if not ok:
+            raise RuntimeError("Failed to start DREAM fit on the remote server.")
 
-        #if not abort_test():
-        # Save head state for initializing the next fit step
-        _, chains, _ = fitter.state.chains()
-        self.restart_pop = chains[-1, : ,:]
+        ok = await client.wait_for_fit_completion()
+        if not ok:
+            raise RuntimeError("Remote DREAM fit failed or timed out.")
 
-        # Analyze the fit state and save values
-        fitter.state.keep_best()
-        fitter.state.mark_outliers()
+        session_bytes = await client.fetch_current_session()
+        if not session_bytes:
+            raise RuntimeError("Failed to download HDF5 session from remote server.")
+
+        fit_state = await asyncio.to_thread(self._load_fit_state, session_bytes)
+
+        fit_state.keep_best()
+        fit_state.mark_outliers()
+
+        _, chains, _ = fit_state.chains()
+        self.restart_pop = chains[-1, :, :]
 
         step = self.steps[-1]
         step.chain_pop = chains[-1, :, :]
-        draw = fitter.state.draw(thin=self.thinning)
+        draw = fit_state.draw(thin=self.thinning)
         step.draw_pts = draw.points
         step.draw_logp = draw.logp
-        step.best_logp = fitter.state.best()[1]
-        self.problem.setp(fitter.state.best()[0])
+        step.best_logp = fit_state.best()[1]
+        self.problem.setp(fit_state.best()[0])
         step.final_chisq = self.problem.chisq_str()
         step.H, _, _ = calc_entropy(step.draw_pts, select_pars=None, options=self.entropy_options)
         step.dH = self.init_entropy - step.H
         step.H_marg, _, _ = calc_entropy(step.draw_pts, select_pars=self.sel, options=self.entropy_options)
         step.dH_marg = self.init_entropy_marg - step.H_marg
 
-        # Calculate the Q profiles associated with posterior distribution
-        print('Calculating %i Q profiles:' % (step.draw_pts.shape[0]))
-        init_time = time.time()
+        # R(Q) profiles at each posterior draw point — computed locally because the
+        # server has no endpoint for this (it uses instrument-specific T/dT/L/dL coords,
+        # not the server's internal Q grid).
+        # TODO: This is a large CPU-bound calculation (~1000 evaluations per step) running
+        # on the orchestrating machine. Options: (1) add a get_qprofiles RPC to the refl1d
+        # server that accepts a parameter matrix + Q grid and returns R(Q) for each row,
+        # reusing the server's already-loaded model; (2) offload to a separate worker pool.
+        # For now it runs in MPMapper subprocesses locally.
+        newvars = [self.instrument.Q2TdTLdL(mQ, mx, mQ) for mQ, mx in zip(self.measQ, self.x)]
+        setattr(self.problem, 'calcTdTLdL', newvars)
+        setattr(self.problem, 'oversampling', self.oversampling)
+        setattr(self.problem, 'resolution', self.instrument.resolution)
+        mapper = MPMapper.start_mapper(self.problem, None, cpus=0)
+        print('Calculating %i Q profiles:' % step.draw_pts.shape[0])
+        t0 = time.time()
         step.qprofs = self.calc_qprofiles(step.draw_pts)
-        print('Calculation time: %f' % (time.time() - init_time))
-
-        # Terminate the multiprocessing pool (required to avoid memory issues
-        # if run is stopped after current fit step)
+        print('Calculation time: %f' % (time.time() - t0))
         MPMapper.stop_mapper(mapper)
         MPMapper.pool = None
+
+    @staticmethod
+    def _load_fit_state(session_bytes: bytes):
+        """Load a bumps MCMCDraw from raw HDF5 session bytes (sync, run in thread)."""
+        import copy as _copy
+        from bumps.webview.server.state_hdf5_backed import State
+
+        b64_session = base64.b64encode(session_bytes).decode()
+        local_state = State()
+        local_state.read_session_bytestring(b64_session)
+
+        store = local_state.history.store
+        if not store:
+            raise ValueError("No problem history found in HDF5 session.")
+        last_name = list(store.keys())[-1]
+        local_state.reload_history_item(last_name)
+
+        if not hasattr(local_state, "fitting") or not hasattr(local_state.fitting, "fit_state"):
+            raise ValueError("HDF5 session does not contain a fit state.")
+
+        fit_state = _copy.deepcopy(local_state.fitting.fit_state)
+        if not hasattr(fit_state, "draw"):
+            raise ValueError("Fit state does not support drawing MCMC samples.")
+        return fit_state
 
     def take_step(self, step=None, allow_repeat=True) -> List[DataPoint]:
         """Analyze the last fitted step and add the next one

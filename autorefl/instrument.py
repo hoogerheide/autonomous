@@ -52,6 +52,12 @@ class ReflectometerBase(object):
         # None if a point detector
         self.bank = bank
 
+        # Intensity calibration table: set by calibrate_intensity() or populated as a
+        # simulation fallback in subclass __init__. Shape: s1_intens_calib (N,),
+        # intens_calib (N,) for single-bank or (N, D) for multi-bank instruments.
+        self.s1_intens_calib = None
+        self.intens_calib = None
+
     def x2q(self, x):
         raise NotImplementedError
 
@@ -62,6 +68,14 @@ class ReflectometerBase(object):
         raise NotImplementedError
 
     def intensity(self, x):
+        if self.s1_intens_calib is not None:
+            s1 = self.get_slits(np.array(x, ndmin=1))[0]
+            if self.intens_calib.ndim == 1:
+                return np.array(np.interp(s1, self.s1_intens_calib, self.intens_calib), ndmin=2).T
+            else:
+                incident_neutrons = [np.interp(s1, self.s1_intens_calib, self.intens_calib[:, d])
+                                     for d in range(self.intens_calib.shape[1])]
+                return np.array(incident_neutrons, ndmin=2).T
         raise NotImplementedError
 
     def meastime(self, x, totaltime):
@@ -330,11 +344,15 @@ class MAGIK(ReflectometerBase):
         try:
             d_intens = np.loadtxt('calibration/magik_intensity_hw106.refl')
             self.d_intens = d_intens
-
             self.p_intens, self.p_intens_cov = np.polyfit(d_intens[:,0], d_intens[:,1], 3, w=1/d_intens[:,2], cov='unscaled')
         except OSError:
             warnings.warn('MAGIK calibration files not found, using defaults')
             self.p_intens = np.array([ 5.56637543e+02,  7.27944632e+04,  2.13479802e+02, -4.37052050e+01])
+
+        # populate simulation fallback table from polynomial
+        _s1_grid = np.linspace(0.01, 5.0, 200)
+        self.s1_intens_calib = _s1_grid
+        self.intens_calib = np.polyval(self.p_intens, _s1_grid)
 
     def x2q(self, x):
         return x
@@ -346,10 +364,7 @@ class MAGIK(ReflectometerBase):
         return min(bounds), max(bounds)
 
     def intensity(self, x):
-        news1 = self.get_slits(x)[0]
-        incident_neutrons = np.polyval(self.p_intens, news1)
-
-        return np.array(incident_neutrons, ndmin=2).T
+        return super().intensity(x)
 
     def intensity_with_error(self, x):
         # NOTE: Code validated using a bumps polynomial fit
@@ -503,11 +518,7 @@ class CANDOR(ReflectometerBase):
         return minx, maxx
 
     def intensity(self, x):
-
-        news1 = self.get_slits(x)[0]
-        incident_neutrons = [np.interp(news1, self.s1_intens_calib, intens) for intens in self.intens_calib.T]
-    
-        return np.array(incident_neutrons, ndmin=2).T
+        return super().intensity(x)
 
     def meastime(self, x, totaltime):
 
