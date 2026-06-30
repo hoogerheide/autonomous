@@ -522,7 +522,7 @@ class AutoReflBase(object):
             elif not np.any(bkgvar):
                 dbkg = np.full_like(Qth, 1.0)
             else:
-                qbkg = np.sqrt(bkgvar)
+                dbkg = np.sqrt(bkgvar)
             
             if show_plots:
                 print(qprof.shape, qbkg.shape)
