@@ -16,23 +16,48 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+import concurrent.futures
+import multiprocessing
+
 import dill
 import h5py
 import numpy as np
 from aiohttp import web
 
-from .inference import DreamFitPlus, _MP_calc_qprofile
-from bumps.mapper import MPMapper
+from bumps.fitters import DreamFit, MonitorRunner
+from .simulation import calc_expected_R
 
 logger = logging.getLogger(__name__)
+
+
+# ── Q-profile worker (module level so ProcessPoolExecutor can pickle it) ────
+
+_qprof_problem = None  # populated by _qprof_init in each worker process
+
+
+def _qprof_init(shared_bytes):
+    global _qprof_problem
+    _qprof_problem = dill.loads(shared_bytes[:])
+
+
+def _qprof_worker(point):
+    mlist = list(_qprof_problem.models)
+    qprof = []
+    for m, newvar in zip(mlist, _qprof_problem.calcTdTLdL):
+        _qprof_problem.setp(point)
+        _qprof_problem.chisq_str()
+        qprof.append(calc_expected_R(m, *newvar,
+                                     oversampling=_qprof_problem.oversampling,
+                                     resolution=_qprof_problem.resolution))
+    return qprof
 
 
 @dataclass
 class ServerState:
     job_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     is_busy: bool = False
-    # Last chain population (nchains × npars) for warm-starting the next fit.
-    last_population: Optional[np.ndarray] = None
+    fitter: Optional[DreamFit] = None   # retained between calls for warm-start
+    mp_manager: Optional[multiprocessing.managers.SyncManager] = None
 
 
 routes = web.RouteTableDef()
@@ -43,45 +68,52 @@ async def get_status(request: web.Request) -> web.Response:
     state: ServerState = request.app['state']
     return web.json_response({
         'is_busy': state.is_busy,
-        'has_population': state.last_population is not None,
+        'has_state': state.fitter is not None and state.fitter.state is not None,
     })
 
 
-def _run_dream(problem, fit_options: dict, initial_population: Optional[np.ndarray]) -> 'bumps.dream.state.MCMCDraw':
-    """Synchronous DreamFit run. Intended to be called in a thread."""
-    fitter = DreamFitPlus(problem)
+def _run_dream(problem, fit_options: dict, fitter: Optional[DreamFit]) -> DreamFit:
+    """Synchronous DreamFit run. Intended to be called in a thread.
+
+    Pass an existing fitter for warm-start (its state is resumed); pass None
+    for a cold start. Returns the fitter so the caller can retain it.
+    """
+    if fitter is None or fitter.state is None:
+        fitter = DreamFit(problem)
+    else:
+        # Re-attach to new problem object (deserialized each call)
+        fitter.problem = problem
+
+    monitors = MonitorRunner(monitors=[], problem=problem)
     opts = {
-        'samples': fit_options.get('samples', 5000),
-        'burn':    fit_options.get('burn', 1000),
-        'pop':     fit_options.get('pop', 10),
-        'init':    fit_options.get('init', 'lhs'),
-        'thin':    fit_options.get('thin', 1),
-        'alpha':   fit_options.get('alpha', 0.001),
-        'outliers': fit_options.get('outliers', 'IQR'),
-        'trim':    fit_options.get('trim', True),
-        'steps':   fit_options.get('steps', 0),
+        'samples':  fit_options.get('samples', 5000),
+        'burn':     fit_options.get('burn', 1000),
+        'pop':      fit_options.get('pop', 10),
+        'init':     fit_options.get('init', 'lhs'),
+        'thin':     fit_options.get('thin', 1),
+        'alpha':    fit_options.get('alpha', 0.001),
+        'outliers': fit_options.get('outliers', 'iqr'),
+        'trim':     fit_options.get('trim', True),
+        'steps':    fit_options.get('steps', 0),
     }
-    fitter.solve(initial_population=initial_population, **opts)
-    return fitter.state
+    fitter.solve(monitors, mapper=lambda p: list(map(problem.nllf, p)), **opts)
+    return fitter
 
 
-def _calc_qprofiles_sync(problem, draw_points: np.ndarray, calc_tdtldl, oversampling: int, resolution: str) -> list:
-    """Synchronous MPMapper Q-profile calculation. Intended to be called in a thread."""
+def _calc_qprofiles_sync(problem, draw_points: np.ndarray, calc_tdtldl, oversampling: int, resolution: str, manager) -> list:
+    """Q-profile calculation via ProcessPoolExecutor. Intended to be called in a thread."""
     setattr(problem, 'calcTdTLdL', calc_tdtldl)
     setattr(problem, 'oversampling', oversampling)
     setattr(problem, 'resolution', resolution)
 
-    mapper = MPMapper.start_mapper(problem, None, cpus=0)
-    try:
-        mappercalc = lambda pts: MPMapper.pool.map(_MP_calc_qprofile, ((MPMapper.problem_id, p) for p in pts))
-        res = mappercalc(draw_points)
-    finally:
-        MPMapper.stop_mapper(mapper)
-        MPMapper.pool = None
+    shared_bytes = manager.Array("B", dill.dumps(problem))
+    with concurrent.futures.ProcessPoolExecutor(
+        initializer=_qprof_init, initargs=(shared_bytes,)
+    ) as executor:
+        res = list(executor.map(_qprof_worker, draw_points))
 
     nmodels = len(calc_tdtldl)
-    qprofs = [np.array([r[i] for r in res]) for i in range(nmodels)]
-    return qprofs
+    return [np.array([r[i] for r in res]) for i in range(nmodels)]
 
 
 def _build_hdf5(dream_state, qprofs: list) -> bytes:
@@ -154,24 +186,23 @@ async def post_fit(request: web.Request) -> web.Response:
                 for model_coords in raw_coords
             ]
 
-            initial_population = state.last_population if warm_start else None
+            fitter_in = state.fitter if warm_start else None
 
             logger.info('Starting DreamFit (warm_start=%s, samples=%s)',
                         warm_start, fit_options.get('samples', 5000))
 
-            dream_state = await asyncio.to_thread(
-                _run_dream, problem, fit_options, initial_population
+            fitter = await asyncio.to_thread(
+                _run_dream, problem, fit_options, fitter_in
             )
-
-            _, chains, _ = dream_state.chains()
-            state.last_population = chains[-1, :, :]
+            state.fitter = fitter
+            dream_state = fitter.state
 
             logger.info('DreamFit complete. Calculating Q-profiles for %d draw points.',
                         dream_state.draw().points.shape[0])
 
             qprofs = await asyncio.to_thread(
                 _calc_qprofiles_sync, problem, dream_state.draw().points,
-                calc_tdtldl, oversampling, resolution
+                calc_tdtldl, oversampling, resolution, state.mp_manager
             )
 
             hdf5_bytes = await asyncio.to_thread(_build_hdf5, dream_state, qprofs)
@@ -229,8 +260,9 @@ async def post_qprofiles(request: web.Request) -> web.Response:
             for model_coords in raw_coords
         ]
 
+        state: ServerState = request.app['state']
         qprofs = await asyncio.to_thread(
-            _calc_qprofiles_sync, problem, draw_points, calc_tdtldl, oversampling, resolution
+            _calc_qprofiles_sync, problem, draw_points, calc_tdtldl, oversampling, resolution, state.mp_manager
         )
 
         buf = io.BytesIO()
@@ -251,9 +283,24 @@ async def post_qprofiles(request: web.Request) -> web.Response:
         return web.json_response({'error': str(e)}, status=500)
 
 
+async def _on_startup(app: web.Application) -> None:
+    state: ServerState = app['state']
+    state.mp_manager = multiprocessing.Manager()
+    logger.info('Multiprocessing manager started')
+
+
+async def _on_cleanup(app: web.Application) -> None:
+    state: ServerState = app['state']
+    if state.mp_manager is not None:
+        state.mp_manager.shutdown()
+        logger.info('Multiprocessing manager shut down')
+
+
 def build_app() -> web.Application:
     app = web.Application(client_max_size=512 * 1024 * 1024)  # 512 MB upload limit
     app['state'] = ServerState()
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
     app.add_routes(routes)
     return app
 

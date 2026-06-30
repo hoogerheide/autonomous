@@ -82,15 +82,15 @@ class AutoReflBase(object):
 
         # Initialize the fit problem
         self.problem = problem
-        models: List[Union[Experiment, FitProblem]] = [problem] if hasattr(problem, 'fitness') else list(problem.models)
+        models: List[Union[Experiment, FitProblem]] = list(problem.models)
         self.models = models
         self.nmodels = len(models)
         self.curmodel = startmodel
         self.oversampling = oversampling
         for m in self.models:
-            m.fitness.probe.oversample(oversampling)
-            m.fitness.probe.resolution = self.instrument.resolution
-            m.fitness.update()
+            m.probe.oversample(oversampling)
+            m.probe.resolution = self.instrument.resolution
+            m.update()
 
         # Condition Q vector to a list of arrays, one for each model
         if isinstance(Q, np.ndarray):
@@ -121,7 +121,7 @@ class AutoReflBase(object):
 
         # Create a copy of the problem for calculating the "true" reflectivity profiles
         self.npars = len(problem.getp())
-        self.orgQ = [list(m.fitness.probe.Q) for m in models]
+        self.orgQ = [list(m.probe.Q) for m in models]
 
         # deal with inherent measurement background
         if not isinstance(meas_bkg, (list, np.ndarray)):
@@ -132,7 +132,7 @@ class AutoReflBase(object):
         self.resid_bkg: np.ndarray = np.full_like(self.meas_bkg, 1e-12)
 
         # these are not used
-        self.newmodels = [m.fitness for m in models]
+        self.newmodels = list(models)
         self.par_scale: np.ndarray = np.diff(problem.bounds(), axis=0)
 
         # set and condition selected parameters for marginalization; use all parameters
@@ -159,7 +159,7 @@ class AutoReflBase(object):
             calcmodel.setp(bestpars)
 
         # add residual background
-        self.resid_bkg: np.ndarray = np.array([c.fitness.probe.background.value for c in self.calcmodels])
+        self.resid_bkg: np.ndarray = np.array([c.probe.background.value for c in self.calcmodels])
 
     def get_all_points(self, modelnum: Union[int, None]) -> List[DataPoint]:
         # returns all data points associated with model with index modelnum
@@ -235,10 +235,10 @@ class AutoReflBase(object):
                                 spec.detector.wavelength, spec.detector.wavelength_resolution,  \
                                 spec.v, spec.dv, spec.Qz, spec.dQ
 
-                m.fitness.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
-                m.fitness.probe.oversample(self.oversampling)
-                m.fitness.probe.resolution = self.instrument.resolution
-                m.fitness.update()
+                m.probe._set_TLR(mT, mdT, mL, mdL, mR, mdR, dQ=mdQ)
+                m.probe.oversample(self.oversampling)
+                m.probe.resolution = self.instrument.resolution
+                m.update()
         
         # protect against too few data points
         self.problem.partial = True
@@ -815,7 +815,7 @@ class AutoReflBase(object):
                         self.instrument.intensity(x)[0]
 
         incident_neutrons = intens * t
-        calcR = calc_expected_R(self.calcmodels[model_num].fitness, T, dT, L, dL,
+        calcR = calc_expected_R(self.calcmodels[model_num], T, dT, L, dL,
                                 self.oversampling, self.instrument.resolution)
         Nspec, (Nbkg, _), Ninc = sim_data_N(calcR, incident_neutrons,
                                                     self.resid_bkg[model_num],
