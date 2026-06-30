@@ -92,7 +92,7 @@ class AutoReflLauncher:
             print('AutoLauncher: no intensity calibration provided, using simulation fallback')
 
         print('AutoLauncher: calculating initial points')
-        points, init_qprofs = await asyncio.to_thread(self.exp.initial_points)
+        points, init_qprofs = await self.exp.initial_points(self.client)
 
         total_t = 0.0
         k = 0
@@ -179,7 +179,7 @@ if __name__ == '__main__':
     import os
     from autorefl.instrument import MAGIK, CANDOR
     from bumps.cli import load_model
-    from refl_analysis.remote import Refl1DClient
+    from autorefl.fit_client import FitClient
     from nice.remote import connect as nice_connect
 
     instr = MAGIK()
@@ -234,9 +234,9 @@ if __name__ == '__main__':
 
     async def main():
         signals = Signaller()
-        client = Refl1DClient(
-            host=os.environ.get('REFL1D_HOST', '127.0.0.1'),
-            port=int(os.environ.get('REFL1D_PORT', '8502')),
+        client = FitClient(
+            host=os.environ.get('AUTOREFL_FIT_HOST', '127.0.0.1'),
+            port=int(os.environ.get('AUTOREFL_FIT_PORT', '5100')),
         )
 
         nice_api = await asyncio.to_thread(nice_connect, NICE_HOST, NICE_CLIENT)
