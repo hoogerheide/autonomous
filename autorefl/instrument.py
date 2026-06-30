@@ -92,7 +92,7 @@ class ReflectometerBase(object):
 
     def dT(self, x):
         usesample = True if self.footprint > self.sample_width else False 
-        return divergence(self.get_slits(x), self.get_slit_distances(), T=self.T(x), sample_width=self.sample_width, use_sample=usesample)
+        return divergence(self.get_slits(x), self.get_slit_distances(), T=np.array(self.T(x)), sample_width=self.sample_width, use_sample=usesample)
 
     def L(self, x):
         
@@ -596,3 +596,167 @@ class CANDOR(ReflectometerBase):
         # return flattened list
         return [item for movelist in movements for item in movelist]
 
+
+class LIQREF(ReflectometerBase):
+    """ LIQREF TOF Reflectometer
+    x = integer index of predefined angle/chopper configurations.
+    Each configuration covers a contiguous Q range at a fixed angle.
+    Calibration data is loaded from files in calibration/liqref/.
+    """
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.name = 'LIQREF'
+        self.xlabel = r'Buffer index'
+        self.resolution = 'normal'
+        self.topspeed = 1. / 40
+        # Top velocity: 1.0 deg / 40 sec
+
+        # instrument geometry
+        self._L12 = 1350.
+        self._L2S = 135.
+        self.footprint = 25.
+        self._R12 = 1.5
+        self.sample_width = np.inf
+
+        self.load_calibration_files()
+
+    def load_calibration_files(self):
+        import glob
+
+        beam_current = 1. / 0.656  # s / mC
+
+        caldata = list()
+        for f in glob.glob('calibration/liqref/*.txt'):
+            Q, L, N, Ne = np.loadtxt(f, unpack=True)
+
+            # convert counts / mC to counts / s
+            N *= beam_current
+            Ne *= beam_current
+
+            with open(f, 'r') as fn:
+                headerdata = fn.readlines()[:3]
+                T = float(headerdata[0].split(':')[-1])
+                s1 = float(headerdata[1].split(':')[-1].split('x')[0])
+                s2 = float(headerdata[2].split(':')[-1].split('x')[0])
+
+            caldata.append(dict(Q=Q, L=L, N=N, Ne=Ne, T=T, s1=s1, s2=s2))
+
+        caldata.sort(key=lambda c: c['Q'][0])
+        self.calibration_data = caldata
+
+    def get_slits(self, x):
+        x = np.array(x, ndmin=1)
+        s1 = np.array([self.calibration_data[ix]['s1'] for ix in x])
+        s2 = np.array([self.calibration_data[ix]['s2'] for ix in x])
+        return s1, s2
+
+    def get_slit_distances(self):
+        return -(self._L12 + self._L2S), -self._L2S
+
+    def x2q(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['Q'] for ix in x]
+
+    def x2a(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['T'] for ix in x]
+
+    def qrange2xrange(self, qbounds):
+        qbounds = np.array(qbounds)
+        minx = next(ix for ix, cd in enumerate(self.calibration_data) if cd['Q'][-1] > min(qbounds))
+        maxx = [ix for ix, cd in enumerate(self.calibration_data) if cd['Q'][0] < max(qbounds)][-1]
+        return minx, maxx
+
+    def intensity(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['N'] for ix in x]
+
+    def meastime(self, x, totaltime):
+        q = a2q(np.array(x), 5.0)
+        f = self._mon0 + self._mon1 * q ** self._Qpow
+        return totaltime * f / sum(f)
+
+    def movetime(self, x):
+        x = np.array(x, ndmin=1)
+        if self.x is None:
+            movetimes = np.zeros_like(x).tolist()
+        else:
+            movetimes = []
+            for ix in x:
+                if ix == self.x:
+                    movetimes.append(0)
+                else:
+                    curT = self.calibration_data[self.x]['T']
+                    newT = self.calibration_data[ix]['T']
+                    two_theta_movetime = 2 * abs(curT - newT) / self.topspeed
+
+                    cur_lowL = self.calibration_data[self.x]['L'][0]
+                    new_lowL = self.calibration_data[ix]['L'][0]
+
+                    chopper_movetime = 0.0 if np.isclose(cur_lowL, new_lowL, atol=0.1) else 45.0
+
+                    movetimes.append(max(two_theta_movetime, chopper_movetime))
+        return movetimes
+
+    def T(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['T'] * np.ones_like(self.calibration_data[ix]['L'])
+                for ix in x]
+
+    def dT(self, x):
+        x = np.array(x, ndmin=1)
+        return [ReflectometerBase.dT(self, ix)[0] * np.ones_like(self.calibration_data[ix]['L'])
+                for ix in x]
+
+    def L(self, x):
+        x = np.array(x, ndmin=1)
+        return [self.calibration_data[ix]['L'] for ix in x]
+
+    def dL(self, x):
+        x = np.array(x, ndmin=1)
+        dLs = []
+        for ix in x:
+            Ls = self.calibration_data[ix]['L']
+            center_points = 0.5 * (Ls[1:] + Ls[:-1])
+            first_center_point = Ls[0] - (center_points[0] - Ls[0])
+            last_center_point = Ls[-1] + (Ls[-1] - center_points[-1])
+            center_points = np.insert(center_points, 0, first_center_point)
+            center_points = np.append(center_points, last_center_point)
+            dLs.append(-0.5 * ((Ls - center_points[:-1]) + (center_points[1:] - Ls)))
+        return dLs
+
+    def Q2TdTLdL(self, qs, measx, measQ):
+        """
+        Converts Q values into (T, dT, L, dL) by averaging over all measx configurations.
+        Overrides the base class version to handle ragged per-configuration arrays.
+        """
+        def flatten(a):
+            return np.array([iia for ia in a for iia in ia])
+
+        _Q = flatten(self.x2q(measx))
+        _T = flatten(self.T(measx))
+        _dT = flatten(self.dT(measx))
+        _L = flatten(self.L(measx))
+        _dL = flatten(self.dL(measx))
+
+        q_edges = edges(measQ, extended=True)
+        nbins = len(q_edges) - 1
+
+        bin_index = np.searchsorted(q_edges, _Q) - 1
+
+        sum_w = np.bincount(bin_index, minlength=nbins)
+        sum_w += (sum_w == 0)
+
+        sum_L = np.bincount(bin_index, weights=_L, minlength=nbins)
+        sum_dL = np.bincount(bin_index, weights=_dL ** 2, minlength=nbins)
+        bar_L = sum_L / sum_w
+        bar_dL = np.sqrt(sum_dL / sum_w)
+
+        sum_T = np.bincount(bin_index, weights=_T, minlength=nbins)
+        sum_dT = np.bincount(bin_index, weights=_dT ** 2, minlength=nbins)
+        bar_T = sum_T / sum_w
+        bar_dT = np.sqrt(sum_dT / sum_w)
+
+        idxs = np.searchsorted(measQ, qs) + 1
+        return (bar_T[idxs], bar_dT[idxs], bar_L[idxs], bar_dL[idxs])

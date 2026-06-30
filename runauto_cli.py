@@ -150,8 +150,10 @@ if __name__ == '__main__':
 #            instr._mon0 = 0.0
         elif args.instrument == 'CANDOR':
             instr = instrument.CANDOR()
+        elif args.instrument == 'LIQREF':
+            instr = instrument.LIQREF()
         else:
-            raise ValueError('instrument must be MAGIK or CANDOR')
+            raise ValueError('instrument must be MAGIK, CANDOR, or LIQREF')
 
         fprefix = '%s_eta%0.2f_npoints%i_repeats%i' % (instr.name, args.eta, args.npoints, args.nrepeats) \
                     if not args.control else instr.name + '_control'
@@ -182,6 +184,12 @@ if __name__ == '__main__':
         measQ = (args.qmin-args.qstep) + np.cumsum(dq)
         #measQ = [m.fitness.probe.Q for m in model.models]
 
+        if args.instrument == 'LIQREF':
+            first_index = next((i for i in range(len(instr.calibration_data))[::-1] if instr.calibration_data[i]['Q'][0] < args.qmin), 0)
+            last_index = next((i for i in range(len(instr.calibration_data)) if instr.calibration_data[i]['Q'][-1] > args.qmax), len(instr.calibration_data) - 1)
+            measx = np.arange(first_index, last_index + 1)
+            measQ = np.sort(np.unique([iiq for iq in instr.x2q(measx) for iiq in iq]))
+
         # simulated experiment
         if not args.control:
 
@@ -204,6 +212,9 @@ if __name__ == '__main__':
                         x[-1] = xrng[1]
                         x = np.array(x)
                         exp.x[i] = x
+                elif args.instrument == 'LIQREF':
+                    for i, _ in enumerate(exp.measQ):
+                        exp.x[i] = measx
 
                 points, _ = exp.initial_points()
                 total_t = 0.0
@@ -215,7 +226,7 @@ if __name__ == '__main__':
                     print('Rep: %i, Step: %i, Total time so far: %0.1f' % (kk, k, total_t))
                     exp.fit_step()
                     #exp.instrument.x = None # to turn off movement penalty
-                    points = exp.take_step(allow_repeat=False)
+                    points = exp.take_step(allow_repeat=True)
                     exp.save(pathname + '/exp%i.pickle' % kk)
                     k += 1
 
@@ -262,10 +273,14 @@ if __name__ == '__main__':
                         exp.meastimeweights.append(weight * np.array(x)**2 / np.sum(np.array(x)**2))
 
                     print(exp.x, len(exp.x[0]))
+                elif args.instrument == 'LIQREF':
+                    for i, _ in enumerate(exp.measQ):
+                        exp.x[i] = measx
 
                 total_t = 0.0
                 k = 0
                 for meastime in meastimes:
+                    exp.instrument.x = None
                     exp.take_step(meastime)
                     total_t += exp.steps[-1].meastime() + exp.steps[-1].movetime()
                     print('Rep: %i, Step: %i, Total time so far: %0.1f' % (kk, k, total_t))
@@ -290,7 +305,7 @@ if __name__ == '__main__':
             print('Resumed, Step: %i, Total time so far: %0.1f' % (k, total_t))
             exp.fit_step()
             #exp.instrument.x = None # to turn off movement penalty
-            exp.take_step(allow_repeat=False)
+            exp.take_step(allow_repeat=True)
             exp.save(pathname + '/' + basename + '_resume.pickle')
             k += 1
 

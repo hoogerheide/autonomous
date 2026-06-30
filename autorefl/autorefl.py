@@ -489,14 +489,23 @@ class AutoReflBase(object):
         xqprofs = list()
         init_time = time.time()
         modeldata = self.get_data()
+        # True for TOF instruments (LIQREF) whose intensity() returns a ragged list;
+        # False for single/fixed-wavelength instruments (MAGIK, CANDOR).
+        reshape_list = isinstance(self.instrument.intensity(self.x[0][:1]), list)
         for mnum, (xs, Qth, qprof, qbkg_default, mdata) in enumerate(zip(self.x, self.measQ, qprofs, self.meas_bkg, modeldata)):
 
-            # get the incident intensity and q values for all x values (should have same shape X x D).
-            # flattened dimension is XD
+            # get the incident intensity and q values for all x values.
+            # For single-wavelength instruments (MAGIK, CANDOR): numpy array, shape X x D.
+            # For TOF instruments (LIQREF): ragged list, one array per x configuration.
             incident_neutrons = self.instrument.intensity(xs)
-            init_shape = incident_neutrons.shape
-            incident_neutrons = incident_neutrons.flatten()
-            q = self.instrument.x2q(xs).flatten()
+            if reshape_list:
+                init_shape = [len(iin) for iin in incident_neutrons]
+                incident_neutrons = np.array([iiin for iin in incident_neutrons for iiin in iin])
+                q = np.array([iiq for iq in self.instrument.x2q(xs) for iiq in iq])
+            else:
+                init_shape = incident_neutrons.shape
+                incident_neutrons = incident_neutrons.flatten()
+                q = self.instrument.x2q(xs).flatten()
 
             # calculate the existing background uncertainty. This is used to determine if additional
             # background measurements must be performed
@@ -633,7 +642,6 @@ class AutoReflBase(object):
 
                 # Condition shape (now has dimension M X P X XD)
                 A = np.moveaxis(A, -1, 1)
-                Hs, _, predictor = calc_entropy(A, None, options=self.entropy_options, predictor=predictor)
 
                 # Calculate measurement times (shape XD)
                 med = np.median(xqprof, axis=0)
@@ -651,27 +659,55 @@ class AutoReflBase(object):
                     plt.yscale('log')
                     plt.show()
 
-                    #plt.plot(xdbkg)
-                    #plt.plot(meas_sigma)
-                    #plt.yscale('log')
-                    #plt.show()
-
                 # Calculate time required to achieve target background; negative times indicate
                 # that background measurement is not necessary
-                # TODO: Should a_min be self.min_meas_time?
                 bkg_meastime = np.clip(t_bkg - t_0, a_min=0.0, a_max=None)
 
-                # apply min measurement time (turn this off initially to test operation)
-                #meastime = np.maximum(np.full_like(meastime, self.min_meas_time), meastime)
+                if reshape_list:
+                    # TOF case: cycle through each x configuration independently
+                    Hs = []
+                    fom = []
+                    meas_time = []
+                    bkg_meas_time = []
+                    curposidx = 0
+                    for npts in init_shape:
+                        sl = slice(curposidx, curposidx + npts)
 
-                # figure of merit is dHdt (reshaped to X x D)
-                dHdt = (H0 - Hs) / meastime_sel
-                dHdt = np.reshape(dHdt, init_shape)
+                        # harmonic mean of per-bin times gives effective total time for this config
+                        mt = 1. / np.sum(1. / meastime_meas[sl])
+                        mt_sel = 1. / np.sum(1. / meastime_sel[sl])
+                        # only include non-zero bins in background harmonic mean
+                        bkg_slice = bkg_meastime[sl]
+                        nonzero = bkg_slice[bkg_slice > 0]
+                        mt_bkg = 1. / np.sum(1. / nonzero) if len(nonzero) > 0 else 0.0
 
-                # calculate fom and average time (shape X)
-                fom = np.sum(dHdt, axis=1)
-                meas_time = 1./ np.sum(1./np.reshape(meastime_meas, init_shape), axis=1)
-                bkg_meas_time = 1./ np.sum(1./np.reshape(bkg_meastime, init_shape), axis=1)
+                        iH, _, predictor = calc_entropy(A[:, :, sl], None, options=self.entropy_options, predictor=predictor)
+
+                        dHdt = np.sum(H0 - iH) / mt_sel
+
+                        meas_time.append(mt)
+                        bkg_meas_time.append(mt_bkg)
+                        Hs.append(iH)
+                        fom.append(dHdt)
+
+                        curposidx += npts
+
+                    Hs = np.array(Hs)
+                    fom = np.array(fom)
+                    meas_time = np.array(meas_time)
+                    bkg_meas_time = np.array(bkg_meas_time)
+
+                else:
+                    Hs, _, predictor = calc_entropy(A, None, options=self.entropy_options, predictor=predictor)
+
+                    # figure of merit is dHdt (reshaped to X x D)
+                    dHdt = (H0 - Hs) / meastime_sel
+                    dHdt = np.reshape(dHdt, init_shape)
+
+                    # calculate fom and average time (shape X)
+                    fom = np.sum(dHdt, axis=1)
+                    meas_time = 1. / np.sum(1. / np.reshape(meastime_meas, init_shape), axis=1)
+                    bkg_meas_time = 1. / np.sum(1. / np.reshape(bkg_meastime, init_shape), axis=1)
 
                 Hlist.append(Hs)
                 foms.append(fom)
@@ -713,15 +749,20 @@ class AutoReflBase(object):
 
             # choose new points. This is not straightforward if there is more than one detector, because
             # each point in XD may choose a different detector. We will choose without replacement by frequency.
-            # idx_array has shape M x D
-            idx_array = newidxs_meas[mnum].reshape(-1, *intens_shapes[mnum])[:, idx, :]
-            #print(idx_array.shape)
-            if idx_array.shape[1] == 1:
-                # straightforward case, with 1 detector
-                chosen = np.squeeze(idx_array)
+            if not reshape_list:
+                # Standard case (MAGIK, CANDOR): idx_array has shape M x D
+                idx_array = newidxs_meas[mnum].reshape(-1, *intens_shapes[mnum])[:, idx, :]
+                if idx_array.shape[1] == 1:
+                    chosen = np.squeeze(idx_array)
+                else:
+                    freq = np.bincount(idx_array.flatten(), minlength=len(pts))
+                    freqsort = np.argsort(freq)
+                    chosen = freqsort[-idx_array.shape[0]:]
             else:
-                # select those that appear most frequently
-                #print(idx_array.shape)
+                # TOF case: select indices from the flat range corresponding to configuration idx
+                sel_start = 0 if idx == 0 else int(np.cumsum(intens_shapes[mnum])[idx - 1])
+                sel_end = int(np.cumsum(intens_shapes[mnum])[idx])
+                idx_array = newidxs_meas[mnum][:, sel_start:sel_end]
                 freq = np.bincount(idx_array.flatten(), minlength=len(pts))
                 freqsort = np.argsort(freq)
                 chosen = freqsort[-idx_array.shape[0]:]
