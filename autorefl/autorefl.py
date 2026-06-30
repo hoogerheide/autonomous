@@ -14,7 +14,7 @@ from refl1d.names import FitProblem, Experiment
 from scipy.interpolate import interp1d
 
 # local imports
-from entropy import calc_entropy, calc_init_entropy, default_entropy_options
+from .entropy import calc_entropy, calc_init_entropy, default_entropy_options
 from .datastruct import DataPoint, ExperimentStep, Intent, MeasurementPoint
 from .reduction import DataPoint2ReflData, interpolate_background, reduce, ReflData
 from .inference import MPMapper, _MP_calc_qprofile, default_fit_options

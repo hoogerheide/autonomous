@@ -3,12 +3,12 @@ from typing import Union, List, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from bumps.fitters import DreamFit, _fill_defaults
-from reflred.candor import edges, _rebin_bank, QData
-from reflred.background import apply_background_subtraction, _ordinate
-from reflred.scale import apply_intensity_norm
-from reflred.refldata import ReflData, Sample, Detector, Monochromator, Monitor
-from reflred.joindata import join_datasets
-from dataflow.lib.uncertainty import Uncertainty as U, interp
+from reductus.reflred.candor import edges, _rebin_bank, QData
+from reductus.reflred.background import apply_background_subtraction, _ordinate
+from reductus.reflred.scale import apply_intensity_norm
+from reductus.reflred.refldata import ReflData, Sample, Detector, Monochromator, Monitor
+from reductus.reflred.joindata import join_datasets
+from reductus.dataflow.lib.uncertainty import Uncertainty as U, interp
 from .datastruct import DataPoint, data_attributes
 
 def interpolate_background(Qbasis, backp: Union[ReflData, None] = None, backm: Union[ReflData, None] = None):

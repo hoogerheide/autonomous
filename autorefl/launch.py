@@ -7,8 +7,8 @@ import time
 
 import numpy as np
 
-from remote.nicedata import NICECampaignTask, Signaller
-from remote.monitor import SocketServer, buttonhandler, emit_history
+from autorefl.remote.nicedata import NICECampaignTask, Signaller
+from autorefl.remote.monitor import SocketServer, buttonhandler, emit_history
 
 from autorefl.autorefl import AutoReflExperiment
 from autorefl.calibration import calibrate_intensity
@@ -175,7 +175,7 @@ class AutoReflLauncher:
 
 if __name__ == '__main__':
 
-    # python -m autorefl_launch
+    # python -m autorefl.launch
     import os
     from autorefl.instrument import MAGIK, CANDOR
     from bumps.cli import load_model

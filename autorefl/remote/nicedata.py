@@ -3,7 +3,7 @@ from typing import List, Dict, Callable
 import asyncio
 import time
 from threading import Event, Timer
-from remote.util import StoppableThread
+from autorefl.remote.util import StoppableThread
 from queue import Queue, Empty
 
 # temp
@@ -11,12 +11,7 @@ import numpy as np
 
 from autorefl.datastruct import DataPoint, MeasurementPoint, Intent, data_attributes
 
-# NICE import
-import sys
-from remote.nicepath import nicepath
-#sys.path.append(nicepath)
-
-from nice.remote import Task, _remoteApi, connect
+from nice.remote import Task, NiceApi, connect
 
 def blocking(func):
     """
@@ -526,7 +521,7 @@ class NICEMeasurementThread(MeasurementThread):
 
         self.name = name
         self.host = host
-        self.api: _remoteApi | None = None
+        self.api: NiceApi | None = None
 
     def run(self):
 

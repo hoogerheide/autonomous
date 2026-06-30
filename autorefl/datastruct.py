@@ -2,8 +2,8 @@ import numpy as np
 from typing import Tuple, Union, List
 from dataclasses import dataclass
 
-from reflred.intent import Intent
-from refl1d.resolution import TL2Q
+from reductus.reflred.intent import Intent
+from refl1d.probe.resolution import TL2Q
 
 data_tuple = Tuple[Union[np.ndarray, list], Union[np.ndarray, list],
                                    Union[np.ndarray, list], Union[np.ndarray, list],

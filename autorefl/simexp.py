@@ -11,7 +11,7 @@ from .autorefl import AutoReflBase, AutoReflExperiment
 from refl1d.names import FitProblem, Experiment
 
 from .datastruct import DataPoint, Intent
-from entropy import default_entropy_options
+from .entropy import default_entropy_options
 from .inference import default_fit_options
 from .simulation import calc_expected_R, sim_data_N
 

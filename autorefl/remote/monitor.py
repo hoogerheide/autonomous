@@ -1,16 +1,16 @@
 from typing import List
+from pathlib import Path
 
 import time
 import asyncio
 from aiohttp import web
 import socketio
 from queue import Queue
-from bumps.monitor import TimedUpdate
-from bumps.fitproblem import nllf_scale
-from bumps.formatnum import format_uncertainty
-from remote.nicedata import Signaller
-from remote.util import StoppableThread
+from autorefl.remote.nicedata import Signaller
+from autorefl.remote.util import StoppableThread
 from autorefl.datastruct import MeasurementPoint
+
+_HERE = Path(__file__).parent
 
 sio = socketio.AsyncServer(async_mode='aiohttp')
 app = web.Application()
@@ -19,11 +19,10 @@ socketlock: asyncio.Lock = asyncio.Lock()
 sockethistory: list = []
 
 async def hello(request):
-    #return web.Response(text="Hello, world")
-    return web.FileResponse('remote/socketpage.html')
+    return web.FileResponse(_HERE / 'socketpage.html')
 
 app.add_routes([web.get('/', hello)])
-app.add_routes([web.static('/lib', 'remote/lib')])
+app.add_routes([web.static('/lib', _HERE / 'lib')])
 
 async def emit_history(event, data, sid=None):
     async with socketlock:
@@ -78,29 +77,20 @@ class SocketServer(StoppableThread):
     def flush(self):
         pass
 
-class SocketMonitor(TimedUpdate):
+class SocketMonitor:
+    """Fit progress monitor that emits updates over the socket queue.
+
+    NOTE: bumps.monitor.TimedUpdate and bumps.fitproblem.nllf_scale were
+    removed from bumps. This class is not currently wired into the autorefl
+    loop and needs to be updated when fit monitoring is re-enabled.
+    """
 
     def __init__(self, problem, queue: Queue, progress=1, improvement=60) -> None:
-        super().__init__(progress=progress, improvement=improvement)
-
         self.queue = queue
         self.problem = problem
 
-    def config_history(self, history):
-        history.requires(time=1, value=1, point=1, step=1)
-
-    #def __call__(self, history):
-    #    record = {'step': history.step[0], 'value': history.value[0]}
-    #    self.queue.put(('fit_update', record))
-    def show_improvement(self, history):
-        pass
-        #record = f'step {history.step[0]} cost {history.value[0]:0.4f}'
-        #self.queue.put(('fit_update', record))
-
     def show_progress(self, history):
-        scale, err = nllf_scale(self.problem)
-        chisq = format_uncertainty(scale*history.value[0], err)
-        record = f'step {history.step[0]} cost {chisq}'
+        record = f'step {history.step[0]} cost {history.value[0]:0.4f}'
         self.queue.put(('fit_update', record))
 
 class QueueMonitor:

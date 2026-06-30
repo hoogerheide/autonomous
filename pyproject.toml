@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autorefl"
+version = "0.1.0"
+description = "Autonomous neutron reflectometry experiment framework"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "dill",
+    "bumps",
+    "refl1d",
+    # reflred and dataflow are from the reductus project:
+    #   pip install git+https://github.com/reductus/reductus.git
+    # They are not listed here to avoid breaking editable installs when
+    # installed separately (e.g. from a conda environment or local clone).
+]
+
+[tool.setuptools]
+packages = ["autorefl", "autorefl.remote"]

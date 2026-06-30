@@ -2,11 +2,11 @@ import numpy as np
 import json
 import warnings
 from typing import Tuple, List, Union
-from reflred.candor import edges, Candor
-from reflred.resolution import divergence
-from reflred.intent import Intent
-from reflred.nexusref import NCNRNeXusRefl, load_nexus_entries
-from reflred.refldata import ReflData, Monitor, Detector, Sample, Slit, Monochromator
+from reductus.reflred.candor import edges, Candor
+from reductus.reflred.resolution import divergence
+from reductus.reflred.intent import Intent
+from reductus.reflred.nexusref import NCNRNeXusRefl, load_nexus_entries
+from reductus.reflred.refldata import ReflData, Monitor, Detector, Sample, Slit, Monochromator
 
 def q2a(q, L):
     return np.degrees(np.arcsin(np.array(q)*L/(4*np.pi)))

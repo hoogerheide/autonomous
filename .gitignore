@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Editable install direct-url
+__editable__.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Experiment outputs
+*.pickle
+*.pkl
+*.hdf
+*.h5
+*.nxs
+*.nxz
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
