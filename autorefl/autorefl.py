@@ -339,7 +339,7 @@ class AutoReflBase(object):
         if self.entropy_options['scale']:
             pts = copy.copy(pts) / self.par_scale[:, self.sel]
 
-        foms, meastimes, bkgmeastimes, _, newpoints = self._fom_from_draw(pts, step.qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat)
+        foms, meastimes, bkgmeastimes, _, newpoints = self._fom_from_draw(pts, step.qprofs, select_ci_level=0.68, meas_ci_level=self.eta, n_forecast=self.npoints, allow_repeat=allow_repeat, correct_meastime=True)
         print('Total figure of merit calculation time: %f' % (time.time() - init_time))
 
         # populate step foms
@@ -445,7 +445,8 @@ class AutoReflBase(object):
                         select_ci_level: float = 0.68,
                         meas_ci_level: float = 0.68,
                         n_forecast: int = 1,
-                        allow_repeat: bool = True) -> Tuple[List[List[np.ndarray]],
+                        allow_repeat: bool = True,
+                        correct_meastime: bool = False) -> Tuple[List[List[np.ndarray]],
                                                             List[List[np.ndarray]],
                                                             List[float],
                                                             List[Tuple[int, int, float, float]]]:
@@ -683,6 +684,18 @@ class AutoReflBase(object):
 
                         iH, _, predictor = calc_entropy(A[:, :, sl], None, options=self.entropy_options, predictor=predictor)
 
+                        if correct_meastime and mt_sel < self.min_meas_time:
+                            # CI assumed by iH was narrower than min_meas_time actually delivers.
+                            # Recompute H using the CI achievable in min_meas_time for all bins
+                            # jointly — a sample is kept only if it agrees at every bin.
+                            newsigma = np.sqrt(med[sl] / (incident_neutrons[sl] * self.min_meas_time))
+                            newcrit = np.all(np.abs(xqprof[:, sl] - med[sl]) < 2 * newsigma, axis=1)
+                            if newcrit.sum() >= 3:
+                                iH, _, predictor = calc_entropy(pts[newcrit], None, options=self.entropy_options, predictor=predictor)
+                            else:
+                                iH = H0
+                            mt_sel = self.min_meas_time
+
                         dHdt = np.sum(H0 - iH) / mt_sel
 
                         meas_time.append(mt)
@@ -699,6 +712,19 @@ class AutoReflBase(object):
 
                 else:
                     Hs, _, predictor = calc_entropy(A, None, options=self.entropy_options, predictor=predictor)
+
+                    if correct_meastime:
+                        # Per-bin correction: where the measurement time is below min_meas_time,
+                        # recompute H using the CI actually achievable in min_meas_time.
+                        for k in range(len(meastime_sel)):
+                            if meastime_sel[k] < self.min_meas_time:
+                                newsigma = np.sqrt(med[k] / (incident_neutrons[k] * self.min_meas_time))
+                                newcrit = np.abs(xqprof[:, k] - med[k]) < 2 * newsigma
+                                if newcrit.sum() >= 3:
+                                    Hs[k] = calc_entropy(pts[newcrit], None, options=self.entropy_options, predictor=predictor)[0]
+                                else:
+                                    Hs[k] = H0
+                                meastime_sel[k] = self.min_meas_time
 
                     # figure of merit is dHdt (reshaped to X x D)
                     dHdt = (H0 - Hs) / meastime_sel
