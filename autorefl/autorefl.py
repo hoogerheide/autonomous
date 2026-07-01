@@ -51,7 +51,9 @@ class AutoReflBase(object):
     startmodel -- integer index of starting model; default 0.
     min_meas_time -- minimum measurement time (float); default 10.0 seconds
     select_pars -- selected parameters for entropy determination. None uses all parameters, otherwise
-                    list of parameter indices
+                    a list of integer indices or a list of parameter label strings. Labels are resolved
+                    lazily via problem.labels() so index positions remain correct if the parameter
+                    vector changes.
     """
 
     def __init__(self, problem: FitProblem,
@@ -135,23 +137,44 @@ class AutoReflBase(object):
         self.newmodels = list(models)
         self.par_scale: np.ndarray = np.diff(problem.bounds(), axis=0)
 
-        # set and condition selected parameters for marginalization; use all parameters
-        # if none are specified
-        if select_pars is None:
-            self.sel: np.ndarray = np.arange(self.npars)
-        else:
-            self.sel: np.ndarray = np.array(select_pars, ndmin=1)
+        # Derived parameter state — populated by setup(client), empty until then.
+        self.available_derived_labels: List[str] = []
+        self.derived_prior_scales: np.ndarray = np.array([])
+        self._all_labels: List[str] = list(problem.labels())
+
+        # Store the original spec so _resolve_sel() can re-resolve after model changes.
+        self.select_pars_spec = select_pars
+        self.sel: np.ndarray = self._resolve_sel()
 
         # initialize objects required for fitting
         self.fit_options = {**default_fit_options, **fit_options}
         self.steps: List[ExperimentStep] = []
         self.restart_pop: Union[np.ndarray, None] = None
 
-# calculate initial MVN entropy in the problem
+        # calculate initial MVN entropy in the problem
         self.entropy_options = {**default_entropy_options, **entropy_options}
         self.thinning = int(self.fit_options['steps']*0.2)
         self.init_entropy, _, _ = calc_init_entropy(problem, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
-        self.init_entropy_marg, _, _ = calc_init_entropy(problem, select_pars=select_pars, pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning, options=self.entropy_options)
+
+        # _ready: True when init_entropy_marg is valid for the current sel.
+        # False when select_pars contains string labels that may refer to derived
+        # parameters — setup(client) must be called to resolve them and compute
+        # the correct baseline entropy over the expanded label space.
+        spec = select_pars
+        _spec_is_native = (
+            spec is None or
+            (len(spec) > 0 and not isinstance(list(spec)[0], str))
+        )
+        if _spec_is_native:
+            _sel_for_init = None if spec is None else self.sel.tolist()
+            self.init_entropy_marg, _, _ = calc_init_entropy(
+                problem, select_pars=_sel_for_init,
+                pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning,
+                options=self.entropy_options)
+            self._ready = True
+        else:
+            self.init_entropy_marg = None
+            self._ready = False
 
         calcmodel = copy.deepcopy(problem)
         self.calcmodels: List[Union[Experiment, FitProblem]] = [calcmodel] if hasattr(calcmodel, 'fitness') else list(calcmodel.models)
@@ -160,6 +183,89 @@ class AutoReflBase(object):
 
         # add residual background
         self.resid_bkg: np.ndarray = np.array([c.probe.background.value for c in self.calcmodels])
+
+    async def setup(self, client: "FitClient") -> None:
+        """Call /setup on the fit server to discover derived parameters and prior scales.
+
+        Must be called before the first fit_step if derived parameter labels are used
+        in select_pars.  Safe to call again after the problem changes (e.g. model added).
+        """
+        result = await client.post_setup(self.problem)
+        self.available_derived_labels = result['derived_labels']
+        self.derived_prior_scales = np.array(result['prior_scales'])
+
+        # Rebuild the unified label list and extend par_scale to cover derived params.
+        self._all_labels = result['native_labels'] + result['derived_labels']
+        if len(self.derived_prior_scales):
+            native_scale = np.diff(self.problem.bounds(), axis=0)  # (1, npars)
+            self.par_scale = np.concatenate(
+                [native_scale, self.derived_prior_scales[np.newaxis, :]], axis=1
+            )
+
+        # Re-resolve sel now that derived labels are known — validates select_pars_spec.
+        self.sel = self._resolve_sel()
+
+        # Compute init_entropy_marg over the expanded prior draws returned by /setup.
+        # This is the correct baseline when derived labels appear in select_pars_spec.
+        native_draws  = result['native_draws']   # (N, npars)
+        derived_draws = result['derived_draws']  # (N, D) or (N, 0)
+        if derived_draws.shape[1] > 0:
+            all_prior_draws = np.concatenate([native_draws, derived_draws], axis=1)
+        else:
+            all_prior_draws = native_draws
+
+        if all_prior_draws.shape[0] > 0:
+            sel_for_marg = None if self.select_pars_spec is None else self.sel.tolist()
+            self.init_entropy_marg, _, _ = calc_entropy(
+                all_prior_draws, select_pars=sel_for_marg, options=self.entropy_options
+            )
+        else:
+            # Fallback: recompute from native-only prior (no derived draws available)
+            sel_for_marg = None if self.select_pars_spec is None else \
+                [i for i in self.sel.tolist() if i < self.npars]
+            self.init_entropy_marg, _, _ = calc_init_entropy(
+                self.problem, select_pars=sel_for_marg or None,
+                pop=self.fit_options['pop'] * self.fit_options['steps'] / self.thinning,
+                options=self.entropy_options
+            )
+
+        self._ready = True
+
+    async def reset(self, client: "FitClient") -> None:
+        """Clear server warm-start chain and derived state. Call before a new experiment."""
+        await client.post_reset()
+        self.available_derived_labels = []
+        self.derived_prior_scales = np.array([])
+        self._all_labels = list(self.problem.labels())
+        self.par_scale = np.diff(self.problem.bounds(), axis=0)
+        self.sel = self._resolve_sel()
+        self.init_entropy_marg = None
+        self._ready = False
+
+    def _resolve_sel(self) -> np.ndarray:
+        """Resolve select_pars_spec to an index array using the current problem.
+
+        If spec is None, returns indices for all parameters.
+        If spec is a list of ints, returns np.array(spec).
+        If spec is a list of strings, resolves each label to its index in problem.labels().
+        """
+        spec = self.select_pars_spec
+        if spec is None:
+            return np.arange(self.npars)
+        spec = list(spec)
+        if len(spec) == 0:
+            return np.array([], dtype=int)
+        if isinstance(spec[0], str):
+            resolved = []
+            for name in spec:
+                try:
+                    resolved.append(self._all_labels.index(name))
+                except ValueError:
+                    raise ValueError(
+                        f"select_pars label {name!r} not found in native or derived labels"
+                    )
+            return np.array(resolved, dtype=int)
+        return np.array(spec, dtype=int)
 
     def get_all_points(self, modelnum: Union[int, None]) -> List[DataPoint]:
         # returns all data points associated with model with index modelnum
@@ -272,6 +378,12 @@ class AutoReflBase(object):
         warm_start:
             Whether to resume from the server's stored chain population.
         """
+        if not self._ready:
+            raise RuntimeError(
+                'AutoReflBase.fit_step called before setup(client). '
+                'Call setup() first when select_pars contains string labels.'
+            )
+
         self.update_models()
 
         fit_options = {
@@ -284,6 +396,12 @@ class AutoReflBase(object):
         }
         calc_tdtldl = [self.instrument.Q2TdTLdL(mQ, mx, mQ) for mQ, mx in zip(self.measQ, self.x)]
 
+        # Derived labels to request — only those in select_pars_spec that are derived.
+        requested_derived = [
+            lbl for lbl in self.available_derived_labels
+            if lbl in (self.select_pars_spec or [])
+        ]
+
         fit_fields, qprofs = await client.post_fit(
             problem=self.problem,
             fit_options=fit_options,
@@ -291,17 +409,29 @@ class AutoReflBase(object):
             oversampling=self.oversampling,
             resolution=self.instrument.resolution,
             warm_start=warm_start,
+            requested_derived_labels=requested_derived,
         )
+
+        # Re-resolve sel in case the parameter vector changed since __init__
+        self.sel = self._resolve_sel()
 
         step = self.steps[-1]
         step.chain_pop = fit_fields['chains'][-1, :, :]
         self.restart_pop = step.chain_pop
-        step.draw_pts = fit_fields['draw_points']
+        native_draw_pts = fit_fields['draw_points']
+
+        # Append derived draws as extra columns so sel indices ≥ npars work correctly.
+        # The server computed these in the same worker pass as qprofs — no extra setp calls.
+        if requested_derived and 'derived_draws' in fit_fields:
+            step.draw_pts = np.concatenate([native_draw_pts, fit_fields['derived_draws']], axis=1)
+        else:
+            step.draw_pts = native_draw_pts
+
         step.draw_logp = fit_fields['draw_logp']
         step.best_logp = fit_fields['best_logp']
         self.problem.setp(fit_fields['best_x'])
         step.final_chisq = self.problem.chisq_str()
-        step.H, _, _ = calc_entropy(step.draw_pts, select_pars=None, options=self.entropy_options)
+        step.H, _, _ = calc_entropy(native_draw_pts, select_pars=None, options=self.entropy_options)
         step.dH = self.init_entropy - step.H
         step.H_marg, _, _ = calc_entropy(step.draw_pts, select_pars=self.sel, options=self.entropy_options)
         step.dH_marg = self.init_entropy_marg - step.H_marg
@@ -328,7 +458,10 @@ class AutoReflBase(object):
 
         # Focus on the last step
         step = self.steps[-1] if step is None else step
-        
+
+        # Re-resolve sel in case the parameter vector changed since __init__
+        self.sel = self._resolve_sel()
+
         # Calculate figures of merit and proposed measurement times with forecasting
         print('Calculating figures of merit:')
         init_time = time.time()
