@@ -58,6 +58,11 @@ class ReflectometerBase(object):
         self.s1_intens_calib = None
         self.intens_calib = None
 
+        # Polarization: None for unpolarized; set to a dict mapping xs name →
+        # {motor_name: value} for polarized campaigns (set at campaign start by
+        # AutoReflDevice, not at instrument construction time).
+        self.polarization_states: dict | None = None
+
     def x2q(self, x):
         raise NotImplementedError
 
@@ -223,6 +228,12 @@ class ReflectometerBase(object):
             t[accel_crit] = 2 * self.basespeed / self.acceleration * (-1 + np.sqrt(1 + 2 * (dx[accel_crit] / 2) * self.acceleration / self.basespeed ** 2))
 
             return t
+
+    def _flipper_motor_names(self) -> List[str]:
+        """Returns flipper motor names from polarization_states, or [] if unpolarized."""
+        if self.polarization_states is None:
+            return []
+        return list(next(iter(self.polarization_states.values())).keys())
 
     def trajectoryMotors(self) -> List[str]:
         """
@@ -408,8 +419,8 @@ class MAGIK(ReflectometerBase):
         Generates list of motors moved for trajectory
         """
 
-        return ['detectorAngle', 'sampleAngle', 'slitAperture1','slitAperture2', 'slitAperture3',
-                'slitAperture4', 'counter', 'pointDetector']
+        return ['detectorAngle', 'sampleAngle', 'slitAperture1', 'slitAperture2', 'slitAperture3',
+                'slitAperture4', 'counter', 'pointDetector'] + self._flipper_motor_names()
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
@@ -454,9 +465,23 @@ class MAGIK(ReflectometerBase):
 class CANDOR(ReflectometerBase):
     """ CANDOR Reflectometer with a single bank
     x = T """
+
+    # Flipper motor positions per cross-section.
+    # TODO: confirm exact NICE motor names and values with instrument scientists.
+    polarization_states_half: dict = {
+        'mm': {'frontPolarization': 'DOWN', 'backPolarization': 'DOWN'},
+        'pp': {'frontPolarization': 'UP',   'backPolarization': 'UP'},
+    }
+    polarization_states_full: dict = {
+        'mm': {'frontPolarization': 'DOWN', 'backPolarization': 'DOWN'},
+        'mp': {'frontPolarization': 'DOWN', 'backPolarization': 'UP'},
+        'pm': {'frontPolarization': 'UP',   'backPolarization': 'DOWN'},
+        'pp': {'frontPolarization': 'UP',   'backPolarization': 'UP'},
+    }
+
     def __init__(self, bank=0) -> None:
         super().__init__(bank=bank)
-        
+
         self.name = 'CANDOR'
         self.xlabel = r'$\Theta$ $(\degree)$'
         self.resolution = 'uniform'
@@ -555,7 +580,7 @@ class CANDOR(ReflectometerBase):
         """
 
         return ['detectorArmAngle', 'sampleAngle', 'slitAperture1', 'slitAperture2',
-                'slitAperture3', 'counter', 'multiDetector']
+                'slitAperture3', 'counter', 'multiDetector'] + self._flipper_motor_names()
 
     def trajectoryData(self, x, intent, dtheta_bkg=0.5) -> List[str]:
         """
