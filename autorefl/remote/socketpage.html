@@ -186,35 +186,66 @@
             plotdata = {'data': [], 'ci': []};
         };
 
-        socket.on("update_plot", data => {
-            let newdata = JSON.parse(data)
-            plotdata = {...plotdata, ...newdata}
-            //console.log(plotdata)
+        function renderPlot() {
             var traces = makePlot(plotdata)
-            var layout = {} //{'annotationdefaults': {'arrowcolor': '#2a3f5f', 'arrowhead': 0, 'arrowwidth': 1}, 'autotypenumbers': 'strict', 'coloraxis': {'colorbar': {'outlinewidth': 0, 'ticks': ''}}, 'colorscale': {'diverging': [[0, '#8e0152'], [0.1, '#c51b7d'], [0.2, '#de77ae'], [0.3, '#f1b6da'], [0.4, '#fde0ef'], [0.5, '#f7f7f7'], [0.6, '#e6f5d0'], [0.7, '#b8e186'], [0.8, '#7fbc41'], [0.9, '#4d9221'], [1, '#276419']], 'sequential': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']], 'sequentialminus': [[0.0, '#0d0887'], [0.1111111111111111, '#46039f'], [0.2222222222222222, '#7201a8'], [0.3333333333333333, '#9c179e'], [0.4444444444444444, '#bd3786'], [0.5555555555555556, '#d8576b'], [0.6666666666666666, '#ed7953'], [0.7777777777777778, '#fb9f3a'], [0.8888888888888888, '#fdca26'], [1.0, '#f0f921']]}, 'colorway': ['#636efa', '#EF553B', '#00cc96', '#ab63fa', '#FFA15A', '#19d3f3', '#FF6692', '#B6E880', '#FF97FF', '#FECB52'], 'font': {'color': '#2a3f5f'}, 'geo': {'bgcolor': 'white', 'lakecolor': 'white', 'landcolor': 'white', 'showlakes': true, 'showland': true, 'subunitcolor': '#C8D4E3'}, 'hoverlabel': {'align': 'left'}, 'hovermode': 'closest', 'mapbox': {'style': 'light'}, 'paper_bgcolor': 'white', 'plot_bgcolor': 'white', 'polar': {'angularaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}, 'bgcolor': 'white', 'radialaxis': {'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': ''}}, 'scene': {'xaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'yaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}, 'zaxis': {'backgroundcolor': 'white', 'gridcolor': '#DFE8F3', 'gridwidth': 2, 'linecolor': '#EBF0F8', 'showbackground': true, 'ticks': '', 'zerolinecolor': '#EBF0F8'}}, 'shapedefaults': {'line': {'color': '#2a3f5f'}}, 'ternary': {'aaxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'baxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}, 'bgcolor': 'white', 'caxis': {'gridcolor': '#DFE8F3', 'linecolor': '#A2B1C6', 'ticks': ''}}, 'title': {'x': 0.05}, 'xaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}, 'yaxis': {'automargin': true, 'gridcolor': '#EBF0F8', 'linecolor': '#EBF0F8', 'ticks': '', 'title': {'standoff': 15}, 'zerolinecolor': '#EBF0F8', 'zerolinewidth': 2}}
-            layout = {...layout, ...{
+            var layout = {
                 yaxis: {type: 'log',
                         showexponent: 'all',
                         exponentformat: 'power',
                         autorange: true,
-                        title: {
-                            text: 'reflectivity',
-                        }},
-                xaxis: {title: {
-                            text: 'Q',
-                }},
-                margin: {
-                    l: 50,
-                    b: 50,
-                    t: 25,
-                    r: 25,
-                    autoexpand: true
-                },
+                        title: {text: 'reflectivity'}},
+                xaxis: {title: {text: 'Q (Å⁻¹)'}},
+                margin: {l: 50, b: 50, t: 25, r: 25, autoexpand: true},
                 plot_bgcolor:"#FFFFFF44",
                 paper_bgcolor:"#FFFFFF00",
                 datarevision: true
-            }}
+            }
             Plotly.newPlot('plot', traces, layout)
+        }
+
+        socket.on("autorefl_data", data => {
+            plotdata = {...plotdata, ...JSON.parse(data)}
+            renderPlot()
+        })
+
+        socket.on("autorefl_profiles", data => {
+            plotdata = {...plotdata, ...JSON.parse(data)}
+            renderPlot()
+        })
+
+        socket.on("autorefl_convergence", data => {
+            const conv = JSON.parse(data)
+            if (!conv.length) return
+            const steps = conv.map(c => c.step)
+            Plotly.react('plot_convergence', [
+                {x: steps, y: conv.map(c => c.dH), name: 'ΔH',
+                 mode: 'lines+markers', type: 'scatter'},
+                {x: steps, y: conv.map(c => c.chisq), name: 'χ²',
+                 mode: 'lines+markers', type: 'scatter', yaxis: 'y2'},
+            ], {
+                xaxis: {title: {text: 'step'}},
+                yaxis: {title: {text: 'ΔH (nats)'}, side: 'left'},
+                yaxis2: {title: {text: 'χ²'}, side: 'right', overlaying: 'y'},
+                legend: {orientation: 'h', y: 1.15},
+                margin: {l: 50, b: 40, t: 10, r: 50},
+                plot_bgcolor:"#FFFFFF44", paper_bgcolor:"#FFFFFF00",
+            })
+        })
+
+        socket.on("autorefl_fom", data => {
+            const foms = JSON.parse(data)
+            Plotly.react('plot_fom', foms.map((f, idx) => ({
+                x: f.x, y: f.fom,
+                name: 'model ' + f.model,
+                line: {color: CB_color_cycle[idx % CB_color_cycle.length]},
+                mode: 'lines', type: 'scatter'
+            })), {
+                xaxis: {title: {text: 'x'}},
+                yaxis: {title: {text: 'FOM'}},
+                legend: {orientation: 'h', y: 1.15},
+                margin: {l: 50, b: 40, t: 10, r: 25},
+                plot_bgcolor:"#FFFFFF44", paper_bgcolor:"#FFFFFF00",
+            })
         })
 
         $(document).ready(function () {
@@ -223,6 +254,8 @@
 
         window.onresize = function() {
             Plotly.Plots.resize('plot');
+            Plotly.Plots.resize('plot_convergence');
+            Plotly.Plots.resize('plot_fom');
         };
 
     </script>
@@ -316,12 +349,11 @@
             box-sizing: border-box;
             display: grid;
             grid-template-columns: [col0] minmax(0, 1fr) [col1] minmax(0, 2fr);
-            grid-template-rows: [row0] minmax(0, 1fr) [row1] minmax(0, 3fr) [row2] minmax(0, 6fr);
+            grid-template-rows: [row0] minmax(0, 1fr) [row1] minmax(0, 3fr) [row2] minmax(0, 6fr) [row3] minmax(0, 4fr);
             grid-gap: 20px;
             height: 95%;
         }
         .grid-title {
-            /*height: 5vh;*/
             grid-column: col0;
             grid-row: row0;
         }
@@ -331,19 +363,15 @@
         }
         .grid-fit {
             grid-column: col0;
-            grid-row: row1 / span 2;
+            grid-row: row1 / span 3;
             height: 100%;
         }
         .grid-progress {
             overflow-y: auto;
             overflow-x: hidden;
             height:100%;
-            /*min-height: 60vh;
-            max-height: 60vh;*/
         }
         .grid-progress-queue {
-            /*max-height: 30vh;*/
-            /*height:100%;*/
             border: 2px solid green;
             border-radius: 10px;
             background-color: rgb(209, 250, 230);
@@ -351,19 +379,26 @@
         }
         .grid-fit-progress-text {
             overflow-y: auto;
-            /*min-height: 5%;*/
             max-height: 30%;
         }
         .grid-queue {
             grid-column: col1;
             grid-row: row1;
-            /*height: 30vh*/
         }
         .grid-plot {
             grid-column: col1;
             grid-row: row2;
-            /*height: 30vh;*/
-            /*width: 100%;*/
+        }
+        .grid-extra {
+            grid-column: col1;
+            grid-row: row3;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .grid-extra-panel {
+            display: flex;
+            flex-direction: column;
         }
         .plot-frame {
             border-radius: 10px;
@@ -434,9 +469,24 @@
             </div>
         </div>
         <div id="plot_container" class="grid-plot">
-            <div id="plot_progress_title" class="titletext">Real Time Plot</div>
-            <div id="plot_frame" class="grid-progress plot-frame">
+            <div class="titletext">R(Q) — Data &amp; Credible Intervals</div>
+            <div class="grid-progress plot-frame">
                 <div id="plot" class="plot"></div>
+            </div>
+        </div>
+
+        <div class="grid-extra">
+            <div class="grid-extra-panel">
+                <div class="titletext">Convergence</div>
+                <div class="plot-frame">
+                    <div id="plot_convergence" class="plot"></div>
+                </div>
+            </div>
+            <div class="grid-extra-panel">
+                <div class="titletext">FOM Landscape</div>
+                <div class="plot-frame">
+                    <div id="plot_fom" class="plot"></div>
+                </div>
             </div>
         </div>
         <div id="queue" class="grid-queue green">
